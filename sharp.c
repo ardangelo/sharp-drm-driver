@@ -47,6 +47,8 @@ struct sharp_memory_panel {
 
 	unsigned int height;
 	unsigned int width;
+
+	unsigned char *buf;
 };
 
 static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
@@ -65,7 +67,7 @@ static void vcom_timer_callback(struct timer_list *t)
 	gpio_set_value(GPIO_VCOM, vcom_setting);
 
 	// Reschedule the timer
-	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(500));
+	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(1000));
 }
 
 static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
@@ -154,106 +156,105 @@ out_free:
 	return ret;
 }
 
-static void sharp_memory_gray8_to_mono_reversed(u8 *dst, u8 const *src,
-	int line_width, struct drm_rect const* clip)
+static void sharp_memory_gray8_to_mono_reversed(u8 *buf, size_t len)
 {
-#if 0
-	u8 *gray8 = buf, *mono = buf;
-	int y, xb, i;
-
-	for (y = clip->y1; y < clip->y2; y++) {
-		for (xb = clip->x1; xb < clip->x2; xb++) {
-			u8 byte = 0x00;
-
-			for (i = 0; i < 8; i++) {
-				int x = xb * 8 + i;
-
-				byte >>= 1;
-				if (gray8[y * line_width + x] >> 7) {
-					byte |= BIT(7);
-				}
-			}
-			*mono++ = byte;
-		}
-	}
-#else
-	int x, y, i;
-	for (y = clip->y1; y < clip->y2; y++) {
-		for (x = clip->x1; x < clip->x2; x++) {
-			dst[(y * line_width + x) / 8] = 0;
-		}
-		for (x = clip->x1; x < clip->x2; x++) {
-			if (src[y * line_width + x] & BIT(7)) {
-				dst[(y * line_width + x) / 8] |= 0b10000000 >> (x % 8);
+	size_t i, j;
+	unsigned char b;
+	for (i = 0; i < len; i += 8) {
+		b = 0;
+		for (j = 0; j < 8; j++) {
+			if (buf[i + j] & BIT(7)) {
+				b |= 0b10000000 >> j;
 			}
 		}
+		buf[i / 8] = b;
 	}
-#endif
+}
+
+// Use DMA to get grayscale representation, then convert to mono
+// Output is stored in `buf`, which must be at least W*H bytes
+static int sharp_memory_clip_mono(u8* buf,
+	struct drm_framebuffer *fb, struct drm_rect const* clip)
+{
+	int rc;
+	struct drm_gem_dma_object *dma_obj;
+	size_t clip_len;
+	struct iosys_map dst, vmap;
+
+	// buf is the size of the whole screen, but only the clip region
+	// is copied from framebuffer
+	clip_len = (clip->y2 - clip->y1) * fb->width;
+
+	// Get GEM memory manager
+	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
+
+	// Start DMA area
+	rc = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+	if (rc) {
+		return rc;
+	}
+
+	// Initialize destination (buf) and source (video)
+	iosys_map_set_vaddr(&dst, buf);
+	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
+	// DMA `clip` into `buf` and convert to 8-bit grayscale
+	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip); 
+
+	// End DMA area
+	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+
+	// Convert in-place from 8-bit grayscale to mono
+	sharp_memory_gray8_to_mono_reversed(buf, clip_len);
+
+	// Success
+	return 0;
 }
 
 static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 	struct drm_rect const* dirty_rect)
 {
-	struct drm_gem_dma_object *dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
-	struct sharp_memory_panel *panel = drm_to_panel(fb->dev);
-	unsigned int dst_pitch = 0;
-	struct iosys_map dst, vmap;
+	int rc;
 	struct drm_rect clip;
-	int idx, y, ret = 0;
-	u8 *buf = NULL, *buf2 = NULL;
-
-	if (!drm_dev_enter(fb->dev, &idx)) {
-		return -ENODEV;
-	}
+	struct sharp_memory_panel *panel;
+	int drm_idx;
+	u8 *line;
+	int y;
 
 	// Clip dirty region rows
 	clip.x1 = 0;
 	clip.x2 = fb->width;
-#if 0
 	clip.y1 = dirty_rect->y1;
 	clip.y2 = dirty_rect->y2;
-#else
-	clip.y1 = 0;
-	clip.y2 = fb->height;
-#endif
 
-	// buf is the size of the whole screen, but only the clip region
-	// is copied from framebuffer
-	//buf = kmalloc_array(fb->width, fb->height, GFP_KERNEL);
-	buf = kmalloc(fb->width * fb->height, GFP_KERNEL);
-	if (!buf) {
-		ret = -ENOMEM;
+	// Get panel info from DRM struct
+	panel = drm_to_panel(fb->dev);
+
+	// Enter DRM device resource area
+	if (!drm_dev_enter(fb->dev, &drm_idx)) {
+		return -ENODEV;
+	}
+
+	// Get mono contents of `clip`
+	rc = sharp_memory_clip_mono(panel->buf, fb, &clip);
+	if (rc) {
 		goto out_exit;
 	}
-	buf2 = kmalloc(panel->width * panel->height / 8, GFP_KERNEL);
-	memset(buf, fb->width * fb->height, 0);
-	memset(buf2, panel->width * panel->height / 8, 0);
 
-	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
-	if (ret) {
-		goto out_free;
-	}
-
-	iosys_map_set_vaddr(&dst, buf);
-	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
-	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, &clip); 
-
-	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
-
-	sharp_memory_gray8_to_mono_reversed(buf2, buf, fb->width, &clip);
-
+	// Write mono data to display
+	line = panel->buf;
 	for (y = clip.y1; y < clip.y2; y++) {
-		sharp_memory_spi_write_line(panel, y,
-			&buf2[(y * panel->width) / 8], panel->width / 8);
+		sharp_memory_spi_write_line(panel, y, line, fb->width / 8);
+		line += (fb->width / 8);
 	}
 
-out_free:
-	kfree(buf2);
-	kfree(buf);
-out_exit:
-	drm_dev_exit(idx);
+	// Success
+	rc = 0;
 
-	return ret;
+out_exit:
+	// Exit DRM device resource area
+	drm_dev_exit(drm_idx);
+
+	return rc;
 }
 
 
@@ -270,24 +271,32 @@ static void power_off(struct sharp_memory_panel *panel)
 static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	struct drm_crtc_state *crtc_state, struct drm_plane_state *plane_state)
 {
+	struct sharp_memory_panel *panel;
+	struct spi_device *spi;
+	int drm_idx;
+
 	printk(KERN_INFO "sharp_memory: entering sharp_memory_pipe_enable\n");
 
-	struct sharp_memory_panel *panel = drm_to_panel(pipe->crtc.dev);
-	struct spi_device *spi = panel->spi;
-	int idx;
+	// Get panel and SPI device structs
+	panel = drm_to_panel(pipe->crtc.dev);
+	spi = panel->spi;
 
-	if (!drm_dev_enter(pipe->crtc.dev, &idx)) {
+	// Enter DRM resource area
+	if (!drm_dev_enter(pipe->crtc.dev, &drm_idx)) {
 		return;
 	}
 
-	/* Power up sequence */
+	// Power up sequence
 	gpio_set_value(GPIO_SCS, 0);
 	gpio_set_value(GPIO_DISP, 1);
 	gpio_set_value(GPIO_VCOM, 0);
 	usleep_range(5000, 10000);
 
 	// Clear display
-	sharp_memory_spi_clear_screen(panel);
+	if (sharp_memory_spi_clear_screen(panel)) {
+		gpio_set_value(GPIO_DISP, 0); // Power down display, VCOM is not running
+		goto out_exit;
+	}
 
 	// Initialize and schedule the VCOM timer
 	timer_setup(&panel->vcom_timer, vcom_timer_callback, 0);
@@ -296,15 +305,19 @@ static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	printk(KERN_INFO "sharp_memory: completed sharp_memory_pipe_enable\n");
 
 out_exit:
-	drm_dev_exit(idx);
+	drm_dev_exit(drm_idx);
 }
 
 static void sharp_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
+	struct sharp_memory_panel *panel;
+	struct spi_device *spi;
+
 	printk(KERN_INFO "sharp_memory: sharp_memory_pipe_disable\n");
 
-	struct sharp_memory_panel *panel = drm_to_panel(pipe->crtc.dev);
-	struct spi_device *spi = panel->spi;
+	// Get panel and SPI device structs
+	panel = drm_to_panel(pipe->crtc.dev);
+	spi = panel->spi;
 
 	// Cancel the timer
 	del_timer_sync(&panel->vcom_timer);
@@ -317,7 +330,6 @@ static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
 {
 	struct drm_plane_state *state = pipe->plane.state;
 	struct drm_rect rect;
-	int idx;
 
 	if (!pipe->crtc.state->active) {
 		return;
@@ -397,13 +409,16 @@ static const struct drm_driver sharp_memory_driver = {
 
 static int sharp_memory_probe(struct spi_device *spi)
 {
-	printk(KERN_INFO "sharp_memory: entering sharp_memory_probe\n");
-
 	const struct drm_display_mode *mode;
-	struct device *dev = &spi->dev;
+	struct device *dev;
 	struct sharp_memory_panel *panel;
 	struct drm_device *drm;
 	int ret;
+
+	printk(KERN_INFO "sharp_memory: entering sharp_memory_probe\n");
+
+	// Get DRM device from SPI struct
+	dev = &spi->dev;
 
 	/* The SPI device is used to allocate dma memory */
 	if (!dev->coherent_dma_mask) {
@@ -435,6 +450,7 @@ static int sharp_memory_probe(struct spi_device *spi)
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
+	panel->buf = devm_kzalloc(dev, panel->width * panel->height, GFP_KERNEL);
 
 	drm->mode_config.min_width = mode->hdisplay;
 	drm->mode_config.max_width = mode->hdisplay;
@@ -474,16 +490,17 @@ static int sharp_memory_probe(struct spi_device *spi)
 
 static void sharp_memory_remove(struct spi_device *spi)
 {
-	printk(KERN_DEBUG "sharp_memory: entered sharp_memory_remove\n");
-	struct drm_device *drm = spi_get_drvdata(spi);
-	printk(KERN_DEBUG "sharp_memory: completed spi_get_drvdata\n");
-	struct sharp_memory_panel *panel = drm_to_panel(drm);
-	printk(KERN_DEBUG "sharp_memory: completed drm_to_panel\n");
+	struct drm_device *drm;
+	struct sharp_memory_panel *panel;
+
+	printk(KERN_DEBUG "sharp_memory: sharp_memory_remove\n");
+
+	// Get DRM and panel device from SPI
+	drm = spi_get_drvdata(spi);
+	panel = drm_to_panel(drm);
 
 	drm_dev_unplug(drm);
-	printk(KERN_DEBUG "sharp_memory: completed drm_dev_unplug\n");
 	drm_atomic_helper_shutdown(drm);
-	printk(KERN_DEBUG "sharp_memory: completed drm_atomic_helper_shutdown\n");
 }
 
 static void sharp_memory_shutdown(struct spi_device *spi)
