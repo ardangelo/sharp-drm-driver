@@ -2,7 +2,7 @@
 
 DRM kernel driver for 2.7" 400x240 Sharp memory LCD panel.
 
-## [Original readme with pinouts and build instructions](README.orig.md)
+## [Original fbdev module readme with pinouts and build instructions](https://github.com/w4ilun/Sharp-Memory-LCD-Kernel-Driver/blob/master/README.md)
 
 ## References
 
