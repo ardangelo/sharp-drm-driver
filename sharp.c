@@ -49,6 +49,9 @@ struct sharp_memory_panel {
 	unsigned int width;
 
 	unsigned char *buf;
+	struct spi_transfer *spi_3_xfers;
+	unsigned char *cmd_buf;
+	unsigned char *trailer_buf;
 };
 
 static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
@@ -73,18 +76,19 @@ static void vcom_timer_callback(struct timer_list *t)
 static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
 {
 	int rc;
-	unsigned char tx_buf[2];
-	struct spi_transfer tr;
 
 	// Create screen clear command SPI transfer
-	tx_buf[0] = CMD_CLEAR_SCREEN;
-	tx_buf[1] = 0;
-	tr.tx_buf = &tx_buf;
-	tr.len = 2;
+	panel->cmd_buf[0] = CMD_CLEAR_SCREEN;
+	panel->spi_3_xfers[0].tx_buf = panel->cmd_buf;
+	panel->spi_3_xfers[0].len = 1;
+	panel->trailer_buf[0] = 0;
+	panel->spi_3_xfers[1].tx_buf = panel->trailer_buf;
+	panel->spi_3_xfers[1].len = 1;
 
+	// Write clear screen command
 	ndelay(80);
 	gpio_set_value(GPIO_SCS, 1);
-	rc = spi_sync_transfer(panel->spi, &tr, 1);
+	rc = spi_sync_transfer(panel->spi, panel->spi_3_xfers, 2);
 	gpio_set_value(GPIO_SCS, 0);
 
 	return rc;
@@ -98,51 +102,31 @@ static inline u8 sharp_memory_reverse_byte(u8 b)
 	return b;
 }
 
-static int sharp_memory_spi_write_tagged_line(struct sharp_memory_panel *panel,
-	const void *line_data, size_t len)
+static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
+	void *line_data, size_t len)
 {
-	void *tx_buf = NULL;
-	struct spi_transfer tr[3] = {};
-	u8 *command_buf, *trailer_buf;
-	int ret;
-
-	command_buf = kmalloc(2, GFP_KERNEL);
-	if (!command_buf) {
-		return -ENOMEM;
-	}
-
-	trailer_buf = kzalloc(2, GFP_KERNEL);
-	if (!trailer_buf) {
-		return -ENOMEM;
-	}
+	int rc;
 
 	// Write line command
-	command_buf[0] = 0b10000000;
-	tr[0].tx_buf = command_buf;
-	tr[0].len = 1;
+	panel->cmd_buf[0] = 0b10000000;
+	panel->spi_3_xfers[0].tx_buf = panel->cmd_buf;
+	panel->spi_3_xfers[0].len = 1;
 
 	// Line data
-	tx_buf = kmemdup(line_data, len, GFP_KERNEL);
-	tr[1].tx_buf = tx_buf;
-	tr[1].len = len;
+	panel->spi_3_xfers[1].tx_buf = line_data;
+	panel->spi_3_xfers[1].len = len;
 
 	// Trailer
-	tr[2].tx_buf = trailer_buf;
-	tr[2].len = 1;
+	panel->trailer_buf[0] = 0;
+	panel->spi_3_xfers[2].tx_buf = panel->trailer_buf;
+	panel->spi_3_xfers[2].len = 1;
 
 	ndelay(80);
 	gpio_set_value(GPIO_SCS, 1);
-	ret = spi_sync_transfer(panel->spi, tr, 3);
+	rc = spi_sync_transfer(panel->spi, panel->spi_3_xfers, 3);
 	gpio_set_value(GPIO_SCS, 0);
 
-	goto out_free;
-
-out_free:
-	kfree(trailer_buf);
-	kfree(tx_buf);
-	kfree(command_buf);
-
-	return ret;
+	return rc;
 }
 
 static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, int y0)
@@ -189,8 +173,9 @@ static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, 
 }
 
 // Use DMA to get grayscale representation, then convert to mono
+// with line number and trailer tags suitable for multi-line write
 // Output is stored in `buf`, which must be at least W*H bytes
-static int sharp_memory_clip_mono(size_t* result_len, u8* buf,
+static int sharp_memory_clip_mono_tagged(size_t* result_len, u8* buf,
 	struct drm_framebuffer *fb, struct drm_rect const* clip)
 {
 	int rc;
@@ -231,8 +216,6 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 	struct sharp_memory_panel *panel;
 	int drm_idx;
 	size_t buf_len;
-	u8 *line;
-	int y;
 
 	// Clip dirty region rows
 	clip.x1 = 0;
@@ -248,21 +231,14 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 		return -ENODEV;
 	}
 
-	// Get mono contents of `clip` with line number tags
-	rc = sharp_memory_clip_mono(&buf_len, panel->buf, fb, &clip);
+	// Convert `clip` from framebuffer to mono with line number tags
+	rc = sharp_memory_clip_mono_tagged(&buf_len, panel->buf, fb, &clip);
 	if (rc) {
 		goto out_exit;
 	}
 
 	// Write mono data to display
-	line = panel->buf;
-	for (y = clip.y1; y < clip.y2; y++) {
-		sharp_memory_spi_write_tagged_line(panel, line, fb->width / 8 + 2);
-		line += 2 + (fb->width / 8);
-	}
-
-	// Success
-	rc = 0;
+	rc = sharp_memory_spi_write_tagged_lines(panel, panel->buf, buf_len);
 
 out_exit:
 	// Exit DRM device resource area
@@ -434,7 +410,7 @@ static int sharp_memory_probe(struct spi_device *spi)
 	// Get DRM device from SPI struct
 	dev = &spi->dev;
 
-	/* The SPI device is used to allocate dma memory */
+	// The SPI device is used to allocate DMA memory
 	if (!dev->coherent_dma_mask) {
 		ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
 		if (ret) {
@@ -443,6 +419,7 @@ static int sharp_memory_probe(struct spi_device *spi)
 		}
 	}
 
+	// Allocate panel storage
 	panel = devm_drm_dev_alloc(dev, &sharp_memory_driver,
 		struct sharp_memory_panel, drm);
 	if (IS_ERR(panel)) {
@@ -450,27 +427,34 @@ static int sharp_memory_probe(struct spi_device *spi)
 		return PTR_ERR(panel);
 	}
 
+	// Initalize DRM mode
 	drm = &panel->drm;
-
 	ret = drmm_mode_config_init(drm);
 	if (ret) {
 		return ret;
 	}
 	drm->mode_config.funcs = &sharp_memory_mode_config_funcs;
 
+	// Initialize panel contents
 	panel->spi = spi;
-
 	mode = &sharp_memory_ls027b7dh01_mode;
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
-	panel->buf = devm_kzalloc(dev, panel->width * panel->height, GFP_KERNEL);
 
+	// Allocate reused heap buffers suitable for SPI source
+	panel->buf = devm_kzalloc(dev, panel->width * panel->height, GFP_KERNEL);
+	panel->spi_3_xfers = devm_kzalloc(dev, sizeof(struct spi_transfer) * 3, GFP_KERNEL);
+	panel->cmd_buf = devm_kzalloc(dev, 1, GFP_KERNEL);
+	panel->trailer_buf = devm_kzalloc(dev, 1, GFP_KERNEL);
+
+	// DRM mode settings
 	drm->mode_config.min_width = mode->hdisplay;
 	drm->mode_config.max_width = mode->hdisplay;
 	drm->mode_config.min_height = mode->vdisplay;
 	drm->mode_config.max_height = mode->vdisplay;
 
+	// Configure DRM connector
 	drm_connector_helper_add(&panel->connector, &sharp_memory_connector_hfuncs);
 	ret = drm_connector_init(drm, &panel->connector, &sharp_memory_connector_funcs,
 		DRM_MODE_CONNECTOR_SPI);
@@ -478,6 +462,7 @@ static int sharp_memory_probe(struct spi_device *spi)
 		return ret;
 	}
 
+	// Initialize DRM pipe
 	ret = drm_simple_display_pipe_init(drm, &panel->pipe, &sharp_memory_pipe_funcs,
 		sharp_memory_formats, ARRAY_SIZE(sharp_memory_formats),
 		NULL, &panel->connector);
@@ -488,12 +473,12 @@ static int sharp_memory_probe(struct spi_device *spi)
 	drm_mode_config_reset(drm);
 
 	printk(KERN_INFO "sharp_memory: registering DRM device\n");
-
 	ret = drm_dev_register(drm, 0);
 	if (ret) {
 		return ret;
 	}
 
+	// fbdev setup
 	spi_set_drvdata(spi, drm);
 	drm_fbdev_generic_setup(drm, 0);
 
