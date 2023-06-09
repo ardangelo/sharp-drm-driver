@@ -29,12 +29,12 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
-#define CMD_WRITE_LINE 0b10000000
-#define CMD_CLEAR_SCREEN 0b00100000
-
 #define GPIO_DISP 22
 #define GPIO_SCS 8
 #define GPIO_VCOM 23
+
+#define CMD_WRITE_LINE 0b10000000
+#define CMD_CLEAR_SCREEN 0b00100000
 
 struct sharp_memory_panel {
 	struct drm_device drm;
@@ -72,32 +72,22 @@ static void vcom_timer_callback(struct timer_list *t)
 
 static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
 {
-	struct spi_transfer tr[1] = {};
-	int ret;
-	u8 *command_buf;
+	int rc;
+	unsigned char tx_buf[2];
+	struct spi_transfer tr;
 
-	command_buf = kmalloc(2, GFP_KERNEL);
-	if (!command_buf) {
-		return -ENOMEM;
-	}
-
-	// Clear screen command and trailer
-	command_buf[0] = CMD_CLEAR_SCREEN;
-	command_buf[1] = 0;
-	tr[0].tx_buf = command_buf;
-	tr[0].len = 2;
+	// Create screen clear command SPI transfer
+	tx_buf[0] = CMD_CLEAR_SCREEN;
+	tx_buf[1] = 0;
+	tr.tx_buf = &tx_buf;
+	tr.len = 2;
 
 	ndelay(80);
 	gpio_set_value(GPIO_SCS, 1);
-	ret = spi_sync_transfer(panel->spi, tr, 1);
+	rc = spi_sync_transfer(panel->spi, &tr, 1);
 	gpio_set_value(GPIO_SCS, 0);
 
-	goto out_free;
-
-out_free:
-	kfree(command_buf);
-
-	return ret;
+	return rc;
 }
 
 static inline u8 sharp_memory_reverse_byte(u8 b)
@@ -108,8 +98,8 @@ static inline u8 sharp_memory_reverse_byte(u8 b)
 	return b;
 }
 
-static int sharp_memory_spi_write_line(struct sharp_memory_panel *panel,
-	size_t y, const void *line_data, size_t len)
+static int sharp_memory_spi_write_tagged_line(struct sharp_memory_panel *panel,
+	const void *line_data, size_t len)
 {
 	void *tx_buf = NULL;
 	struct spi_transfer tr[3] = {};
@@ -126,11 +116,10 @@ static int sharp_memory_spi_write_line(struct sharp_memory_panel *panel,
 		return -ENOMEM;
 	}
 
-	// Write line at line Y command
-	command_buf[0] = CMD_WRITE_LINE;
-	command_buf[1] = sharp_memory_reverse_byte((u8)(y + 1)); // Indexed from 1
+	// Write line command
+	command_buf[0] = 0b10000000;
 	tr[0].tx_buf = command_buf;
-	tr[0].len = 2;
+	tr[0].len = 1;
 
 	// Line data
 	tx_buf = kmemdup(line_data, len, GFP_KERNEL);
@@ -139,7 +128,7 @@ static int sharp_memory_spi_write_line(struct sharp_memory_panel *panel,
 
 	// Trailer
 	tr[2].tx_buf = trailer_buf;
-	tr[2].len = 2;
+	tr[2].len = 1;
 
 	ndelay(80);
 	gpio_set_value(GPIO_SCS, 1);
@@ -156,34 +145,57 @@ out_free:
 	return ret;
 }
 
-static void sharp_memory_gray8_to_mono_reversed(u8 *buf, size_t len)
+static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, int y0)
 {
-	size_t i, j;
-	unsigned char b;
-	for (i = 0; i < len; i += 8) {
-		b = 0;
-		for (j = 0; j < 8; j++) {
-			if (buf[i + j] & BIT(7)) {
-				b |= 0b10000000 >> j;
+	int line, b8, b1;
+	unsigned char d;
+	int const tagged_line_len = 2 + width / 8;
+
+	// Iterate over lines from [0, height)
+	for (line = 0; line < height; line++) {
+
+		// Iterate over chunks of 8 source grayscale bytes
+		// Each 8-byte source chunk will map to one destination mono byte
+		for (b8 = 0; b8 < width; b8 += 8) {
+			d = 0;
+
+			// Iterate over each of the 8 grayscale bytes in the chunk
+			// Build up the destination mono byte
+			for (b1 = 0; b1 < 8; b1++) {
+				if (buf[(line * width) + b8 + b1] & BIT(7)) {
+					d |= 0b10000000 >> b1;
+				}
 			}
+
+			// Without the line number and trailer tags, each destination
+			// mono line would have a length `width / 8`. However, we are
+			// inserting the line number at the beginning of the line and
+			// the zero-byte trailer at the end.
+			// So the destination mono line is at index
+			// `line * tagged_line_len = line * (2 + width / 8)`
+			// The destination mono byte is offset by 1 to make room for
+			// the line tag, written at the end of converting the current
+			// line.
+			buf[(line * tagged_line_len) + 1 + (b8 / 8)] = d;
 		}
-		buf[i / 8] = b;
+
+		// Write the line number and trailer tags
+		buf[line * tagged_line_len] = sharp_memory_reverse_byte((u8)(y0 + 1)); // Indexed from 1
+		buf[(line * tagged_line_len) + tagged_line_len - 1] = 0;
+		y0++;
 	}
+
+	return height * tagged_line_len;
 }
 
 // Use DMA to get grayscale representation, then convert to mono
 // Output is stored in `buf`, which must be at least W*H bytes
-static int sharp_memory_clip_mono(u8* buf,
+static int sharp_memory_clip_mono(size_t* result_len, u8* buf,
 	struct drm_framebuffer *fb, struct drm_rect const* clip)
 {
 	int rc;
 	struct drm_gem_dma_object *dma_obj;
-	size_t clip_len;
 	struct iosys_map dst, vmap;
-
-	// buf is the size of the whole screen, but only the clip region
-	// is copied from framebuffer
-	clip_len = (clip->y2 - clip->y1) * fb->width;
 
 	// Get GEM memory manager
 	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
@@ -204,7 +216,8 @@ static int sharp_memory_clip_mono(u8* buf,
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
 	// Convert in-place from 8-bit grayscale to mono
-	sharp_memory_gray8_to_mono_reversed(buf, clip_len);
+	*result_len = sharp_memory_gray8_to_mono_tagged(buf,
+		(clip->x2 - clip->x1), (clip->y2 - clip->y1), clip->y1);
 
 	// Success
 	return 0;
@@ -217,6 +230,7 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 	struct drm_rect clip;
 	struct sharp_memory_panel *panel;
 	int drm_idx;
+	size_t buf_len;
 	u8 *line;
 	int y;
 
@@ -234,8 +248,8 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 		return -ENODEV;
 	}
 
-	// Get mono contents of `clip`
-	rc = sharp_memory_clip_mono(panel->buf, fb, &clip);
+	// Get mono contents of `clip` with line number tags
+	rc = sharp_memory_clip_mono(&buf_len, panel->buf, fb, &clip);
 	if (rc) {
 		goto out_exit;
 	}
@@ -243,8 +257,8 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 	// Write mono data to display
 	line = panel->buf;
 	for (y = clip.y1; y < clip.y2; y++) {
-		sharp_memory_spi_write_line(panel, y, line, fb->width / 8);
-		line += (fb->width / 8);
+		sharp_memory_spi_write_tagged_line(panel, line, fb->width / 8 + 2);
+		line += 2 + (fb->width / 8);
 	}
 
 	// Success
