@@ -1,427 +1,506 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
+ * DRM driver for 2.7" Sharp Memory LCD
+ *
+ * Copyright 2023 Andrew D'Angelo
+ */
+
+#include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
-#include <linux/slab.h>
-#include <linux/spinlock.h>
-#include <linux/workqueue.h>
+#include <linux/property.h>
+#include <linux/sched/clock.h>
 #include <linux/spi/spi.h>
 
-#include <linux/kthread.h> 
-#include <linux/sched.h>
-#include <linux/delay.h>
-#include <linux/time.h>
-#include <linux/timer.h>
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_connector.h>
+#include <drm/drm_damage_helper.h>
+#include <drm/drm_drv.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fb_helper.h>
+#include <drm/drm_format_helper.h>
+#include <drm/drm_framebuffer.h>
+#include <drm/drm_gem_atomic_helper.h>
+#include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_managed.h>
+#include <drm/drm_modes.h>
+#include <drm/drm_rect.h>
+#include <drm/drm_probe_helper.h>
+#include <drm/drm_simple_kms_helper.h>
 
-#include <linux/fb.h>
-#include <linux/mm.h>
-#include <linux/init.h>
-#include <linux/vmalloc.h>
+#define CMD_WRITE_LINE 0b10000000
+#define CMD_CLEAR_SCREEN 0b00100000
 
-#include <linux/gpio.h>
-#include <linux/uaccess.h>
+#define GPIO_DISP 22
+#define GPIO_SCS 8
+#define GPIO_VCOM 23
 
-#define LCDWIDTH 400
-#define VIDEOMEMSIZE    (1*1024*1024)   /* 1 MB */
+struct sharp_memory_panel {
+	struct drm_device drm;
+	struct drm_simple_display_pipe pipe;
+	const struct drm_display_mode *mode;
+	struct drm_connector connector;
+	struct spi_device *spi;
 
-char commandByte = 0b10000000;
-char vcomByte    = 0b01000000;
-char clearByte   = 0b00100000;
-char paddingByte = 0b00000000;
+	struct timer_list vcom_timer;
 
-char DISP       = 22;
-char SCS        = 8;
-char VCOM       = 23;
-
-int lcdWidth = LCDWIDTH;
-int lcdHeight = 240;
-int fpsCounter;
-
-static int seuil = 4; // Indispensable pour fbcon
-module_param(seuil, int, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP );
-
-char vcomState;
-
-unsigned char lineBuffer[LCDWIDTH/8];
-
-struct sharp {
-    struct spi_device	*spi;
-	int			id;
-    char			name[sizeof("sharp-3")];
-
-    struct mutex		mutex;
-	struct work_struct	work;
-	spinlock_t		lock;
+	unsigned int height;
+	unsigned int width;
 };
 
-struct sharp   *screen;
-struct fb_info *info;
-
-static void *videomemory;
-static u_long videomemorysize = VIDEOMEMSIZE;
-
-void vfb_fillrect(struct fb_info *p, const struct fb_fillrect *region);
-static int vfb_mmap(struct fb_info *info, struct vm_area_struct *vma);
-void sendLine(char *buffer, char lineNumber);
-
-static struct fb_var_screeninfo vfb_default = {
-    .xres =     400,
-    .yres =     240,
-    .xres_virtual = 400,
-    .yres_virtual = 240,
-    .bits_per_pixel = 24,
-    .grayscale = 1,
-    .red =      { 0, 8, 0 },
-    .green =    { 0, 8, 0 },
-    .blue =     { 0, 8, 0 },
-    .activate = FB_ACTIVATE_NOW,
-    .height =   400,
-    .width =    240,
-    .pixclock = 20000,
-    .left_margin =  0,
-    .right_margin = 0,
-    .upper_margin = 0,
-    .lower_margin = 0,
-    .hsync_len =    128,
-    .vsync_len =    128,
-    .vmode =    FB_VMODE_NONINTERLACED,
-    };
-
-static struct fb_fix_screeninfo vfb_fix = {
-    .id =       "Sharp FB",
-    .type =     FB_TYPE_PACKED_PIXELS,
-    .line_length = 1200,
-    .xpanstep = 0,
-    .ypanstep = 0,
-    .ywrapstep =    0,
-    .visual =	FB_VISUAL_MONO10,
-    .accel =    FB_ACCEL_NONE,
-};
-
-static struct fb_ops vfb_ops = {
-    .fb_read        = fb_sys_read,
-    .fb_write       = fb_sys_write,
-    .fb_fillrect    = sys_fillrect,
-    .fb_copyarea    = sys_copyarea,
-    .fb_imageblit   = sys_imageblit,
-    .fb_mmap    = vfb_mmap,
-};
-
-static struct task_struct *thread1;
-static struct task_struct *fpsThread;
-static struct task_struct *vcomToggleThread;
-
-static int vfb_mmap(struct fb_info *info,
-            struct vm_area_struct *vma)
+static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
 {
-    unsigned long start = vma->vm_start;
-    unsigned long size = vma->vm_end - vma->vm_start;
-    unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
-    unsigned long page, pos;
-    printk(KERN_CRIT "start %ld size %ld offset %ld", start, size, offset);
-
-    if (vma->vm_pgoff > (~0UL >> PAGE_SHIFT))
-        return -EINVAL;
-    if (size > info->fix.smem_len)
-        return -EINVAL;
-    if (offset > info->fix.smem_len - size)
-        return -EINVAL;
-
-    pos = (unsigned long)info->fix.smem_start + offset;
-
-    while (size > 0) {
-        page = vmalloc_to_pfn((void *)pos);
-        if (remap_pfn_range(vma, start, page, PAGE_SIZE, PAGE_SHARED)) {
-            return -EAGAIN;
-        }
-        start += PAGE_SIZE;
-        pos += PAGE_SIZE;
-        if (size > PAGE_SIZE)
-            size -= PAGE_SIZE;
-        else
-            size = 0;
-    }
-
-    return 0;
+	return container_of(drm, struct sharp_memory_panel, drm);
 }
 
-void vfb_fillrect(struct fb_info *p, const struct fb_fillrect *region)
+static void vcom_timer_callback(struct timer_list *t)
 {
-    printk(KERN_CRIT "from fillrect");
+	static u8 vcom_setting = 0;
+
+	struct sharp_memory_panel *panel = from_timer(panel, t, vcom_timer);
+
+	// Toggle the GPIO pin
+	vcom_setting = (vcom_setting) ? 0 : 1;
+	gpio_set_value(GPIO_VCOM, vcom_setting);
+
+	// Reschedule the timer
+	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(500));
 }
 
-static void *rvmalloc(unsigned long size)
+static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
 {
-    void *mem;
-    unsigned long adr;
+	struct spi_transfer tr[1] = {};
+	int ret;
+	u8 *command_buf;
 
-    size = PAGE_ALIGN(size);
-    mem = vmalloc_32(size);
-    if (!mem)
-        return NULL;
-
-    memset(mem, 0, size); /* Clear the ram out, no junk to the user */
-    adr = (unsigned long) mem;
-    while (size > 0) {
-        SetPageReserved(vmalloc_to_page((void *)adr));
-        adr += PAGE_SIZE;
-        size -= PAGE_SIZE;
-    }
-
-    return mem;
-}
-
-static void rvfree(void *mem, unsigned long size)
-{
-    unsigned long adr;
-
-    if (!mem)
-        return;
-
-    adr = (unsigned long) mem;
-    while ((long) size > 0) {
-        ClearPageReserved(vmalloc_to_page((void *)adr));
-        adr += PAGE_SIZE;
-        size -= PAGE_SIZE;
-    }
-    vfree(mem);
-}
-
-void clearDisplay(void) {
-    char buffer[2] = {clearByte, paddingByte};
-    gpio_set_value(SCS, 1);
-
-    spi_write(screen->spi, (const u8 *)buffer, 2);
-
-    gpio_set_value(SCS, 0);
-}
-
-char reverseByte(char b) {
-  b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
-  b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
-  b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
-  return b;
-}
-
-int vcomToggleFunction(void* v) 
-{
-    while (!kthread_should_stop()) 
-    {
-        msleep(50);
-        vcomState = vcomState ? 0:1;
-        gpio_set_value(VCOM, vcomState);
-    }
-    return 0;
-}
-
-int fpsThreadFunction(void* v)
-{
-    while (!kthread_should_stop()) 
-    {
-        msleep(5000);
-    	printk(KERN_DEBUG "FPS sharp : %d\n", fpsCounter);
-    	fpsCounter = 0;
-    }
-    return 0;
-}
-
-int thread_fn(void* v) 
-{
-    //int i;
-    int x,y,i;
-    char pixel;
-    char hasChanged = 0;
-
-    unsigned char *screenBufferCompressed;
-    char bufferByte = 0;
-    char sendBuffer[1 + (1+50+1)*1 + 1];
-
-    clearDisplay();
-
-    //unsigned char *screenBufferCompressed;
-    screenBufferCompressed = vzalloc((50+4)*240*sizeof(unsigned char)); 	//plante si on met moins
-
-    //char bufferByte = 0;
-    //char sendBuffer[1 + (1+50+1)*1 + 1];
-    sendBuffer[0] = commandByte;
-    sendBuffer[52] = paddingByte;
-    sendBuffer[1 + 52] = paddingByte;
-
-    // Init screen to black
-    for(y=0 ; y < 240 ; y++)
-    {
-	gpio_set_value(SCS, 1);
-	screenBufferCompressed[y*(50+4)] = commandByte;
-	screenBufferCompressed[y*(50+4) + 1] = reverseByte(y+1); //sharp display lines are indexed from 1
-	screenBufferCompressed[y*(50+4) + 52] = paddingByte;
-	screenBufferCompressed[y*(50+4) + 53] = paddingByte;
-
-	//screenBufferCompressed is all to 0 by default (vzalloc)
-
-	spi_write(screen->spi, (const u8 *)(screenBufferCompressed+(y*(50+4))), 54);
-	gpio_set_value(SCS, 0);
-    }
-
-    // Main loop
-    while (!kthread_should_stop()) 
-    {
-        msleep(50);
-
-        for(y=0 ; y < 240 ; y++)
-        {
-            hasChanged = 0;
-
-            for(x=0 ; x<50 ; x++)
-            {
-                for(i=0 ; i<8 ; i++ )
-                {
-                    pixel = ioread8((void*)((uintptr_t)info->fix.smem_start + (x*8 + y*400 + i)*3));
-
-                    if(pixel)
-                    {
-                        // passe le bit 7 - i a 1
-                        bufferByte |=  (1 << (7 - i)); 
-                    }
-                    else
-                    {
-                        // passe le bit 7 - i a 0
-                        bufferByte &=  ~(1 << (7 - i)); 
-                    }
-                }
-                if(!hasChanged && (screenBufferCompressed[x + 2 + y*(50+4)] != bufferByte))
-                {
-                    hasChanged = 1;
-                }
-                screenBufferCompressed[x+2 + y*(50+4)] = bufferByte;
-            }
-
-            if(hasChanged)
-            {
-                gpio_set_value(SCS, 1);
-                //la memoire allouee avec vzalloc semble trop lente...
-                memcpy(sendBuffer, screenBufferCompressed+y*(50+4), 54);
-                spi_write(screen->spi, (const u8 *)(sendBuffer), 54);
-                gpio_set_value(SCS, 0);
-            }
-
-        }
-    }
-
-    return 0;
-}
-
-static int sharp_probe(struct spi_device *spi)
-{
-    char our_thread[] = "updateScreen";
-    char thread_vcom[] = "vcom";
-    char thread_fps[] = "fpsThread";
-    int retval;
-
-	screen = devm_kzalloc(&spi->dev, sizeof(*screen), GFP_KERNEL);
-	if (!screen)
+	command_buf = kmalloc(2, GFP_KERNEL);
+	if (!command_buf) {
 		return -ENOMEM;
+	}
 
-	spi->bits_per_word  = 8;
-	spi->max_speed_hz   = 2000000;
+	// Clear screen command and trailer
+	command_buf[0] = CMD_CLEAR_SCREEN;
+	command_buf[1] = 0;
+	tr[0].tx_buf = command_buf;
+	tr[0].len = 2;
 
-	screen->spi	= spi;
+	ndelay(80);
+	gpio_set_value(GPIO_SCS, 1);
+	ret = spi_sync_transfer(panel->spi, tr, 1);
+	gpio_set_value(GPIO_SCS, 0);
 
-    spi_set_drvdata(spi, screen);
+	goto out_free;
 
-    thread1 = kthread_create(thread_fn,NULL,our_thread);
-    if((thread1))
-    {
-        wake_up_process(thread1);
-    }
+out_free:
+	kfree(command_buf);
 
-    fpsThread = kthread_create(fpsThreadFunction,NULL,thread_fps);
-    if((fpsThread))
-    {
-        wake_up_process(fpsThread);
-    }
-
-    vcomToggleThread = kthread_create(vcomToggleFunction,NULL,thread_vcom);
-    if((vcomToggleThread))
-    {
-        wake_up_process(vcomToggleThread);
-    }
-
-    gpio_request(SCS, "SCS");
-    gpio_direction_output(SCS, 0);
-
-    gpio_request(VCOM, "VCOM");
-    gpio_direction_output(VCOM, 0);
-
-    gpio_request(DISP, "DISP");
-    gpio_direction_output(DISP, 1);
-
-    // SCREEN PART
-    retval = -ENOMEM;
-
-    if (!(videomemory = rvmalloc(videomemorysize)))
-        return retval;
-
-    memset(videomemory, 0, videomemorysize);
-
-    info = framebuffer_alloc(sizeof(u32) * 256, &spi->dev);
-    if (!info)
-        goto err;
-
-    info->screen_base = (char __iomem *)videomemory;
-    info->fbops = &vfb_ops;
-
-    info->var = vfb_default;
-    vfb_fix.smem_start = (unsigned long) videomemory;
-    vfb_fix.smem_len = videomemorysize;
-    info->fix = vfb_fix;
-    info->par = NULL;
-    info->flags = FBINFO_FLAG_DEFAULT;
-
-    retval = fb_alloc_cmap(&info->cmap, 16, 0);
-    if (retval < 0)
-        goto err1;
-
-    retval = register_framebuffer(info);
-    if (retval < 0)
-        goto err2;
-
-    fb_info(info, "Virtual frame buffer device, using %ldK of video memory\n",
-        videomemorysize >> 10);
-    return 0;
-err2:
-    fb_dealloc_cmap(&info->cmap);
-err1:
-    framebuffer_release(info);
-err:
-    rvfree(videomemory, videomemorysize);
-
-    return 0;
+	return ret;
 }
 
-static void sharp_remove(struct spi_device *spi)
+static inline u8 sharp_memory_reverse_byte(u8 b)
 {
-        if (info) {
-                unregister_framebuffer(info);
-                fb_dealloc_cmap(&info->cmap);
-                framebuffer_release(info);
-        }
-	kthread_stop(thread1);
-	kthread_stop(fpsThread);
-    kthread_stop(vcomToggleThread);
-	printk(KERN_CRIT "out of screen module");
-	//return 0;
+	b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+	b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+	b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+	return b;
 }
 
-static struct spi_driver sharp_driver = {
-    .probe          = sharp_probe,
-    .remove         = sharp_remove,
-	.driver = {
-		.name	= "sharp",
-		.owner	= THIS_MODULE,
-	},
+static int sharp_memory_spi_write_line(struct sharp_memory_panel *panel,
+	size_t y, const void *line_data, size_t len)
+{
+	void *tx_buf = NULL;
+	struct spi_transfer tr[3] = {};
+	u8 *command_buf, *trailer_buf;
+	int ret;
+
+	command_buf = kmalloc(2, GFP_KERNEL);
+	if (!command_buf) {
+		return -ENOMEM;
+	}
+
+	trailer_buf = kzalloc(2, GFP_KERNEL);
+	if (!trailer_buf) {
+		return -ENOMEM;
+	}
+
+	// Write line at line Y command
+	command_buf[0] = CMD_WRITE_LINE;
+	command_buf[1] = sharp_memory_reverse_byte((u8)(y + 1)); // Indexed from 1
+	tr[0].tx_buf = command_buf;
+	tr[0].len = 2;
+
+	// Line data
+	tx_buf = kmemdup(line_data, len, GFP_KERNEL);
+	tr[1].tx_buf = tx_buf;
+	tr[1].len = len;
+
+	// Trailer
+	tr[2].tx_buf = trailer_buf;
+	tr[2].len = 2;
+
+	ndelay(80);
+	gpio_set_value(GPIO_SCS, 1);
+	ret = spi_sync_transfer(panel->spi, tr, 3);
+	gpio_set_value(GPIO_SCS, 0);
+
+	goto out_free;
+
+out_free:
+	kfree(trailer_buf);
+	kfree(tx_buf);
+	kfree(command_buf);
+
+	return ret;
+}
+
+static void sharp_memory_gray8_to_mono_reversed(u8 *dst, u8 const *src,
+	int line_width, struct drm_rect const* clip)
+{
+#if 0
+	u8 *gray8 = buf, *mono = buf;
+	int y, xb, i;
+
+	for (y = clip->y1; y < clip->y2; y++) {
+		for (xb = clip->x1; xb < clip->x2; xb++) {
+			u8 byte = 0x00;
+
+			for (i = 0; i < 8; i++) {
+				int x = xb * 8 + i;
+
+				byte >>= 1;
+				if (gray8[y * line_width + x] >> 7) {
+					byte |= BIT(7);
+				}
+			}
+			*mono++ = byte;
+		}
+	}
+#else
+	int x, y, i;
+	for (y = clip->y1; y < clip->y2; y++) {
+		for (x = clip->x1; x < clip->x2; x++) {
+			dst[(y * line_width + x) / 8] = 0;
+		}
+		for (x = clip->x1; x < clip->x2; x++) {
+			if (src[y * line_width + x] & BIT(7)) {
+				dst[(y * line_width + x) / 8] |= 0b10000000 >> (x % 8);
+			}
+		}
+	}
+#endif
+}
+
+static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
+	struct drm_rect const* dirty_rect)
+{
+	struct drm_gem_dma_object *dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
+	struct sharp_memory_panel *panel = drm_to_panel(fb->dev);
+	unsigned int dst_pitch = 0;
+	struct iosys_map dst, vmap;
+	struct drm_rect clip;
+	int idx, y, ret = 0;
+	u8 *buf = NULL, *buf2 = NULL;
+
+	if (!drm_dev_enter(fb->dev, &idx)) {
+		return -ENODEV;
+	}
+
+	// Clip dirty region rows
+	clip.x1 = 0;
+	clip.x2 = fb->width;
+#if 0
+	clip.y1 = dirty_rect->y1;
+	clip.y2 = dirty_rect->y2;
+#else
+	clip.y1 = 0;
+	clip.y2 = fb->height;
+#endif
+
+	// buf is the size of the whole screen, but only the clip region
+	// is copied from framebuffer
+	//buf = kmalloc_array(fb->width, fb->height, GFP_KERNEL);
+	buf = kmalloc(fb->width * fb->height, GFP_KERNEL);
+	if (!buf) {
+		ret = -ENOMEM;
+		goto out_exit;
+	}
+	buf2 = kmalloc(panel->width * panel->height / 8, GFP_KERNEL);
+	memset(buf, fb->width * fb->height, 0);
+	memset(buf2, panel->width * panel->height / 8, 0);
+
+	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+	if (ret) {
+		goto out_free;
+	}
+
+	iosys_map_set_vaddr(&dst, buf);
+	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
+	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, &clip); 
+
+	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+
+	sharp_memory_gray8_to_mono_reversed(buf2, buf, fb->width, &clip);
+
+	for (y = clip.y1; y < clip.y2; y++) {
+		sharp_memory_spi_write_line(panel, y,
+			&buf2[(y * panel->width) / 8], panel->width / 8);
+	}
+
+out_free:
+	kfree(buf2);
+	kfree(buf);
+out_exit:
+	drm_dev_exit(idx);
+
+	return ret;
+}
+
+
+static void power_off(struct sharp_memory_panel *panel)
+{
+	printk(KERN_INFO "sharp_memory: powering off\n");
+
+	/* Turn off power and all signals */
+	gpio_set_value(GPIO_SCS, 0);
+	gpio_set_value(GPIO_DISP, 0);
+	gpio_set_value(GPIO_VCOM, 0);
+}
+
+static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
+	struct drm_crtc_state *crtc_state, struct drm_plane_state *plane_state)
+{
+	printk(KERN_INFO "sharp_memory: entering sharp_memory_pipe_enable\n");
+
+	struct sharp_memory_panel *panel = drm_to_panel(pipe->crtc.dev);
+	struct spi_device *spi = panel->spi;
+	int idx;
+
+	if (!drm_dev_enter(pipe->crtc.dev, &idx)) {
+		return;
+	}
+
+	/* Power up sequence */
+	gpio_set_value(GPIO_SCS, 0);
+	gpio_set_value(GPIO_DISP, 1);
+	gpio_set_value(GPIO_VCOM, 0);
+	usleep_range(5000, 10000);
+
+	// Clear display
+	sharp_memory_spi_clear_screen(panel);
+
+	// Initialize and schedule the VCOM timer
+	timer_setup(&panel->vcom_timer, vcom_timer_callback, 0);
+	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(500));
+
+	printk(KERN_INFO "sharp_memory: completed sharp_memory_pipe_enable\n");
+
+out_exit:
+	drm_dev_exit(idx);
+}
+
+static void sharp_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
+{
+	printk(KERN_INFO "sharp_memory: sharp_memory_pipe_disable\n");
+
+	struct sharp_memory_panel *panel = drm_to_panel(pipe->crtc.dev);
+	struct spi_device *spi = panel->spi;
+
+	// Cancel the timer
+	del_timer_sync(&panel->vcom_timer);
+
+	power_off(panel);
+}
+
+static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
+				struct drm_plane_state *old_state)
+{
+	struct drm_plane_state *state = pipe->plane.state;
+	struct drm_rect rect;
+	int idx;
+
+	if (!pipe->crtc.state->active) {
+		return;
+	}
+
+	if (drm_atomic_helper_damage_merged(old_state, state, &rect)) {
+		sharp_memory_fb_dirty(state->fb, &rect);
+	}
+}
+
+static const struct drm_simple_display_pipe_funcs sharp_memory_pipe_funcs = {
+	.enable = sharp_memory_pipe_enable,
+	.disable = sharp_memory_pipe_disable,
+	.update = sharp_memory_pipe_update,
+	.prepare_fb = drm_gem_simple_display_pipe_prepare_fb,
 };
 
-module_spi_driver(sharp_driver);
+static int sharp_memory_connector_get_modes(struct drm_connector *connector)
+{
+	struct sharp_memory_panel *panel = drm_to_panel(connector->dev);
+	struct drm_display_mode *mode;
 
-MODULE_AUTHOR("Ael Gain <ael.gain@free.fr>");
-MODULE_DESCRIPTION("Sharp memory lcd driver");
-MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("spi:sharp");
+	mode = drm_mode_duplicate(connector->dev, panel->mode);
+	if (!mode) {
+		DRM_ERROR("Failed to duplicate mode\n");
+		return 0;
+	}
+
+	drm_mode_set_name(mode);
+	mode->type |= DRM_MODE_TYPE_PREFERRED;
+	drm_mode_probed_add(connector, mode);
+
+	connector->display_info.width_mm = mode->width_mm;
+	connector->display_info.height_mm = mode->height_mm;
+
+	return 1;
+}
+
+static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
+	.get_modes = sharp_memory_connector_get_modes,
+};
+
+static const struct drm_connector_funcs sharp_memory_connector_funcs = {
+	.reset = drm_atomic_helper_connector_reset,
+	.fill_modes = drm_helper_probe_single_connector_modes,
+	.destroy = drm_connector_cleanup,
+	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
+};
+
+static const struct drm_mode_config_funcs sharp_memory_mode_config_funcs = {
+	.fb_create = drm_gem_fb_create_with_dirty,
+	.atomic_check = drm_atomic_helper_check,
+	.atomic_commit = drm_atomic_helper_commit,
+};
+
+static const uint32_t sharp_memory_formats[] = {
+	DRM_FORMAT_XRGB8888,
+};
+
+static const struct drm_display_mode sharp_memory_ls027b7dh01_mode = {
+	DRM_SIMPLE_MODE(400, 240, 59, 35),
+};
+
+DEFINE_DRM_GEM_DMA_FOPS(sharp_memory_fops);
+
+static const struct drm_driver sharp_memory_driver = {
+	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
+	.fops = &sharp_memory_fops,
+	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+	.name = "sharp_memory",
+	.desc = "Sharp Memory LCD panel",
+	.date = "20230526",
+	.major = 1,
+	.minor = 0,
+};
+
+static int sharp_memory_probe(struct spi_device *spi)
+{
+	printk(KERN_INFO "sharp_memory: entering sharp_memory_probe\n");
+
+	const struct drm_display_mode *mode;
+	struct device *dev = &spi->dev;
+	struct sharp_memory_panel *panel;
+	struct drm_device *drm;
+	int ret;
+
+	/* The SPI device is used to allocate dma memory */
+	if (!dev->coherent_dma_mask) {
+		ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+		if (ret) {
+			dev_warn(dev, "Failed to set dma mask %d\n", ret);
+			return ret;
+		}
+	}
+
+	panel = devm_drm_dev_alloc(dev, &sharp_memory_driver,
+		struct sharp_memory_panel, drm);
+	if (IS_ERR(panel)) {
+		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
+		return PTR_ERR(panel);
+	}
+
+	drm = &panel->drm;
+
+	ret = drmm_mode_config_init(drm);
+	if (ret) {
+		return ret;
+	}
+	drm->mode_config.funcs = &sharp_memory_mode_config_funcs;
+
+	panel->spi = spi;
+
+	mode = &sharp_memory_ls027b7dh01_mode;
+	panel->mode = mode;
+	panel->width = mode->hdisplay;
+	panel->height = mode->vdisplay;
+
+	drm->mode_config.min_width = mode->hdisplay;
+	drm->mode_config.max_width = mode->hdisplay;
+	drm->mode_config.min_height = mode->vdisplay;
+	drm->mode_config.max_height = mode->vdisplay;
+
+	drm_connector_helper_add(&panel->connector, &sharp_memory_connector_hfuncs);
+	ret = drm_connector_init(drm, &panel->connector, &sharp_memory_connector_funcs,
+		DRM_MODE_CONNECTOR_SPI);
+	if (ret) {
+		return ret;
+	}
+
+	ret = drm_simple_display_pipe_init(drm, &panel->pipe, &sharp_memory_pipe_funcs,
+		sharp_memory_formats, ARRAY_SIZE(sharp_memory_formats),
+		NULL, &panel->connector);
+	if (ret) {
+		return ret;
+	}
+
+	drm_mode_config_reset(drm);
+
+	printk(KERN_INFO "sharp_memory: registering DRM device\n");
+
+	ret = drm_dev_register(drm, 0);
+	if (ret) {
+		return ret;
+	}
+
+	spi_set_drvdata(spi, drm);
+	drm_fbdev_generic_setup(drm, 0);
+
+	printk(KERN_INFO "sharp_memory: successful probe\n");
+
+	return 0;
+}
+
+static void sharp_memory_remove(struct spi_device *spi)
+{
+	printk(KERN_DEBUG "sharp_memory: entered sharp_memory_remove\n");
+	struct drm_device *drm = spi_get_drvdata(spi);
+	printk(KERN_DEBUG "sharp_memory: completed spi_get_drvdata\n");
+	struct sharp_memory_panel *panel = drm_to_panel(drm);
+	printk(KERN_DEBUG "sharp_memory: completed drm_to_panel\n");
+
+	drm_dev_unplug(drm);
+	printk(KERN_DEBUG "sharp_memory: completed drm_dev_unplug\n");
+	drm_atomic_helper_shutdown(drm);
+	printk(KERN_DEBUG "sharp_memory: completed drm_atomic_helper_shutdown\n");
+}
+
+static void sharp_memory_shutdown(struct spi_device *spi)
+{
+	drm_atomic_helper_shutdown(spi_get_drvdata(spi));
+}
+
+static struct spi_driver sharp_memory_spi_driver = {
+	.driver = {
+		.name = "sharp",
+	},
+	.probe = sharp_memory_probe,
+	.remove = sharp_memory_remove,
+	.shutdown = sharp_memory_shutdown,
+};
+module_spi_driver(sharp_memory_spi_driver);
+
+MODULE_DESCRIPTION("Sharp Memory LCD DRM driver");
+MODULE_AUTHOR("Andrew D'Angelo");
+MODULE_LICENSE("GPL");
