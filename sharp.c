@@ -342,22 +342,8 @@ static const struct drm_simple_display_pipe_funcs sharp_memory_pipe_funcs = {
 static int sharp_memory_connector_get_modes(struct drm_connector *connector)
 {
 	struct sharp_memory_panel *panel = drm_to_panel(connector->dev);
-	struct drm_display_mode *mode;
 
-	mode = drm_mode_duplicate(connector->dev, panel->mode);
-	if (!mode) {
-		DRM_ERROR("Failed to duplicate mode\n");
-		return 0;
-	}
-
-	drm_mode_set_name(mode);
-	mode->type |= DRM_MODE_TYPE_PREFERRED;
-	drm_mode_probed_add(connector, mode);
-
-	connector->display_info.width_mm = mode->width_mm;
-	connector->display_info.height_mm = mode->height_mm;
-
-	return 1;
+	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
 
 static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
@@ -457,12 +443,12 @@ static int sharp_memory_probe(struct spi_device *spi)
 	drm->mode_config.max_height = mode->vdisplay;
 
 	// Configure DRM connector
-	drm_connector_helper_add(&panel->connector, &sharp_memory_connector_hfuncs);
 	ret = drm_connector_init(drm, &panel->connector, &sharp_memory_connector_funcs,
 		DRM_MODE_CONNECTOR_SPI);
 	if (ret) {
 		return ret;
 	}
+	drm_connector_helper_add(&panel->connector, &sharp_memory_connector_hfuncs);
 
 	// Initialize DRM pipe
 	ret = drm_simple_display_pipe_init(drm, &panel->pipe, &sharp_memory_pipe_funcs,
@@ -471,6 +457,9 @@ static int sharp_memory_probe(struct spi_device *spi)
 	if (ret) {
 		return ret;
 	}
+
+	// Enable damaged screen area clips
+	drm_plane_enable_fb_damage_clips(&panel->pipe.plane);
 
 	drm_mode_config_reset(drm);
 
