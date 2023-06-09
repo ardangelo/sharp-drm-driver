@@ -146,7 +146,9 @@ static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, 
 			// Iterate over each of the 8 grayscale bytes in the chunk
 			// Build up the destination mono byte
 			for (b1 = 0; b1 < 8; b1++) {
-				if (buf[(line * width) + b8 + b1] & BIT(7)) {
+
+				// Change at what gray level the mono pixel is active here
+				if (buf[(line * width) + b8 + b1] >= 32) {
 					d |= 0b10000000 >> b1;
 				}
 			}
