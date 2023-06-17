@@ -29,6 +29,8 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
+#include "params_iface.h"
+
 #define GPIO_DISP 22
 #define GPIO_SCS 8
 #define GPIO_VCOM 23
@@ -148,9 +150,14 @@ static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, 
 			for (b1 = 0; b1 < 8; b1++) {
 
 				// Change at what gray level the mono pixel is active here
-				if (buf[(line * width) + b8 + b1] >= 32) {
+				if (buf[(line * width) + b8 + b1] >= g_param_mono_cutoff) {
 					d |= 0b10000000 >> b1;
 				}
+			}
+
+			// Apply inversion
+			if (g_param_mono_invert) {
+				d = ~d;
 			}
 
 			// Without the line number and trailer tags, each destination

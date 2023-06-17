@@ -1,4 +1,5 @@
 obj-m += sharp.o
+sharp-objs += main.o params_iface.o
 
 export KROOT=/lib/modules/$(shell uname -r)/build
 
