@@ -30,3 +30,18 @@ MODULE_PARM_DESC(mono_cutoff,
 
 module_param_cb(mono_invert, &u8_param_ops, &g_param_mono_invert, 0660);
 MODULE_PARM_DESC(mono_invert, "0 for no inversion, 1 for inversion");
+
+int params_probe(void)
+{
+	return 0;
+}
+
+void params_remove(void)
+{
+	return;
+}
+
+void params_shutdown(void)
+{
+	return;
+}
