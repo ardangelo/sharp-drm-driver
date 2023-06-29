@@ -268,10 +268,14 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
-	// Add indicators if in range
-	if ((clip->x1 < (fb->width - INDICATORS_WIDTH))
-	 && (clip->y1 < INDICATOR_HEIGHT)) {
-		draw_indicators(panel, buf, fb->width, clip);
+	// Add status indicators
+	if (g_param_indicators) {
+
+		// Only redraw indicators if the dirty region would overwrite them
+		if ((clip->x1 < (fb->width - INDICATORS_WIDTH))
+		 && (clip->y1 < INDICATOR_HEIGHT)) {
+			draw_indicators(panel, buf, fb->width, clip);
+		}
 	}
 
 	// Convert in-place from 8-bit grayscale to mono

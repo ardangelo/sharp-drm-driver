@@ -7,6 +7,7 @@
 
 int g_param_mono_cutoff = 32;
 int g_param_mono_invert = 0;
+int g_param_indicators = 1;
 
 static int set_param_u8(const char *val, const struct kernel_param *kp)
 {
@@ -21,13 +22,6 @@ static int set_param_u8(const char *val, const struct kernel_param *kp)
 
 	// Refresh framebuffer
 	(void)drm_refresh();
-
-	(void)drm_set_indicator(0, 's');
-	(void)drm_set_indicator(1, 'p');
-	(void)drm_set_indicator(2, 'c');
-	(void)drm_set_indicator(3, 'a');
-	(void)drm_set_indicator(4, 'g');
-	(void)drm_set_indicator(5, 'm');
 
 	return rc;
 }
@@ -44,6 +38,9 @@ MODULE_PARM_DESC(mono_cutoff,
 module_param_cb(mono_invert, &u8_param_ops, &g_param_mono_invert, 0660);
 MODULE_PARM_DESC(mono_invert, "0 for no inversion, 1 for inversion");
 
+module_param_cb(indicators, &u8_param_ops, &g_param_indicators, 0660);
+MODULE_PARM_DESC(mono_invert, "0 for no indicators, 1 for indicators");
+
 int params_probe(void)
 {
 	return 0;
@@ -52,4 +49,12 @@ int params_probe(void)
 void params_remove(void)
 {
 	return;
+}
+
+void params_set_mono_invert(int setting)
+{
+	g_param_mono_invert = setting;
+
+	// Refresh framebuffer
+	(void)drm_refresh();
 }
