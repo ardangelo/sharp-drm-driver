@@ -33,6 +33,8 @@
 #include "ioctl_iface.h"
 #include "drm_iface.h"
 
+#include "indicators.h"
+
 #define GPIO_DISP 22
 #define GPIO_SCS 8
 #define GPIO_VCOM 23
@@ -57,6 +59,8 @@ struct sharp_memory_panel {
 	struct spi_transfer *spi_3_xfers;
 	unsigned char *cmd_buf;
 	unsigned char *trailer_buf;
+
+	char indicators[MAX_INDICATORS];
 };
 
 static struct sharp_memory_panel* g_panel = NULL;
@@ -136,6 +140,47 @@ static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
 	return rc;
 }
 
+static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width,
+	struct drm_rect const* clip)
+{
+	int i, dx, dy, sx, sy;
+	u8 const* ind = NULL;
+
+	for (i = 0; i < MAX_INDICATORS; i++) {
+
+		// Get indicator pixels
+		ind = indicator_for(panel->indicators[i]);
+		if (!ind) {
+			continue;
+		}
+
+		// Draw indicator pixels
+		for (sy = 0; sy < INDICATOR_HEIGHT; sy++) {
+
+			if (sy < clip->y1) {
+				continue;
+			} else if (clip->y2 <= sy) {
+				break;
+			}
+
+			dy = sy - clip->y1;
+
+			for (sx = 0; sx < INDICATOR_WIDTH; sx++) {
+
+				if (sx < clip->x1) {
+					continue;
+				} else if (clip->x2 <= sx) {
+					break;
+				}
+
+				dx = (width - ((i + 1) * INDICATOR_WIDTH) + sx) - clip->x1;
+
+				buf[dy * (clip->x2 - clip->x1) + dx] = ind[sy * INDICATOR_HEIGHT + sx];
+			}
+		}
+	}
+}
+
 static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, int y0)
 {
 	int line, b8, b1;
@@ -189,8 +234,8 @@ static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, 
 // Use DMA to get grayscale representation, then convert to mono
 // with line number and trailer tags suitable for multi-line write
 // Output is stored in `buf`, which must be at least W*H bytes
-static int sharp_memory_clip_mono_tagged(size_t* result_len, u8* buf,
-	struct drm_framebuffer *fb, struct drm_rect const* clip)
+static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_t* result_len,
+	u8* buf, struct drm_framebuffer *fb, struct drm_rect const* clip)
 {
 	int rc;
 	struct drm_gem_dma_object *dma_obj;
@@ -209,10 +254,16 @@ static int sharp_memory_clip_mono_tagged(size_t* result_len, u8* buf,
 	iosys_map_set_vaddr(&dst, buf);
 	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
 	// DMA `clip` into `buf` and convert to 8-bit grayscale
-	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip); 
+	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip);
 
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+
+	// Add indicators if in range
+	if ((clip->x1 >= (fb->width - INDICATORS_WIDTH))
+	 && (clip->y1 < INDICATOR_HEIGHT)) {
+		draw_indicators(panel, buf, fb->width, clip);
+	}
 
 	// Convert in-place from 8-bit grayscale to mono
 	*result_len = sharp_memory_gray8_to_mono_tagged(buf,
@@ -246,7 +297,7 @@ static int sharp_memory_fb_dirty(struct drm_framebuffer *fb,
 	}
 
 	// Convert `clip` from framebuffer to mono with line number tags
-	rc = sharp_memory_clip_mono_tagged(&buf_len, panel->buf, fb, &clip);
+	rc = sharp_memory_clip_mono_tagged(panel, &buf_len, panel->buf, fb, &clip);
 	if (rc) {
 		goto out_exit;
 	}
@@ -419,7 +470,7 @@ int drm_probe(struct spi_device *spi)
 	struct device *dev;
 	struct sharp_memory_panel *panel;
 	struct drm_device *drm;
-	int ret;
+	int ret, i;
 
 	printk(KERN_INFO "sharp_memory: entering drm_probe\n");
 
@@ -458,6 +509,9 @@ int drm_probe(struct spi_device *spi)
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
+	for (i = 0; i < MAX_INDICATORS; i++) {
+		panel->indicators[i] = '\0';
+	}
 
 	// Allocate reused heap buffers suitable for SPI source
 	panel->buf = devm_kzalloc(dev, panel->width * panel->height, GFP_KERNEL);
@@ -510,39 +564,57 @@ int drm_probe(struct spi_device *spi)
 void drm_remove(struct spi_device *spi)
 {
 	struct drm_device *drm;
-	struct sharp_memory_panel *panel;
 
-	printk(KERN_DEBUG "sharp_memory: drm_remove\n");
+	printk(KERN_INFO "sharp_memory: drm_remove\n");
 
 	// Clear global panel
 	g_panel = NULL;
 
 	// Get DRM and panel device from SPI
 	drm = spi_get_drvdata(spi);
-	panel = drm_to_panel(drm);
 
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
-}
-
-void drm_shutdown(struct spi_device *spi)
-{
-	drm_atomic_helper_shutdown(spi_get_drvdata(spi));
 }
 
 int drm_refresh(void)
 {
 	struct drm_rect dirty_rect;
 
-	if (g_panel && g_panel->fb) {
-
-		// Refresh framebuffer
-		dirty_rect.x1 = 0;
-		dirty_rect.x2 = g_panel->fb->width;
-		dirty_rect.y1 = 0;
-		dirty_rect.y2 = g_panel->fb->height;
-		return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
+	if (!g_panel || !g_panel->fb) {
+		return 0;
 	}
 
-	return 0;
+	g_panel->indicators[0] = '^';
+
+	// Refresh framebuffer
+	dirty_rect.x1 = 0;
+	dirty_rect.x2 = g_panel->fb->width;
+	dirty_rect.y1 = 0;
+	dirty_rect.y2 = g_panel->fb->height;
+
+	return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
+}
+
+int drm_set_indicator(size_t idx, char c)
+{
+	struct drm_rect dirty_rect;
+
+	if (!g_panel || !g_panel->fb) {
+		return -1;
+	}
+
+	// Set indicator
+	if (idx >= MAX_INDICATORS) {
+		return -1;
+	}
+	g_panel->indicators[idx] = c;
+
+	// Refresh framebuffer
+	dirty_rect.x1 = g_panel->fb->width - INDICATORS_WIDTH;
+	dirty_rect.x2 = g_panel->fb->width;
+	dirty_rect.y1 = 0;
+	dirty_rect.y2 = INDICATOR_HEIGHT;
+
+	return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
 }

@@ -6,6 +6,5 @@ extern int g_param_mono_invert;
 
 int params_probe(void);
 void params_remove(void);
-void params_shutdown(void);
 
 #endif

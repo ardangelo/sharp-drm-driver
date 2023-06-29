@@ -3,6 +3,5 @@
 
 int ioctl_probe(void);
 void ioctl_remove(void);
-void ioctl_shutdown(void);
 
 #endif

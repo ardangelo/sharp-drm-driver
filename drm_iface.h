@@ -27,7 +27,6 @@
 
 int drm_probe(struct spi_device *spi);
 void drm_remove(struct spi_device *spi);
-void drm_shutdown(struct spi_device *spi);
 
 int drm_refresh(void);
 

@@ -46,8 +46,3 @@ void params_remove(void)
 {
 	return;
 }
-
-void params_shutdown(void)
-{
-	return;
-}

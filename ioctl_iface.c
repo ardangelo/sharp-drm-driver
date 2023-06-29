@@ -11,8 +11,3 @@ void ioctl_remove(void)
 {
 	return;
 }
-
-void ioctl_shutdown(void)
-{
-	return;
-}

@@ -44,9 +44,7 @@ static void sharp_memory_remove(struct spi_device *spi)
 
 static void sharp_memory_shutdown(struct spi_device *spi)
 {
-	ioctl_shutdown();
-	params_shutdown();
-	drm_shutdown(spi);
+	sharp_memory_remove(spi);
 }
 
 static struct spi_driver sharp_memory_spi_driver = {
