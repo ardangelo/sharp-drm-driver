@@ -29,5 +29,6 @@ int drm_probe(struct spi_device *spi);
 void drm_remove(struct spi_device *spi);
 
 int drm_refresh(void);
+int drm_set_indicator(size_t idx, char c);
 
 #endif

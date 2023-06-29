@@ -22,6 +22,13 @@ static int set_param_u8(const char *val, const struct kernel_param *kp)
 	// Refresh framebuffer
 	(void)drm_refresh();
 
+	(void)drm_set_indicator(0, 's');
+	(void)drm_set_indicator(1, 'p');
+	(void)drm_set_indicator(2, 'c');
+	(void)drm_set_indicator(3, 'a');
+	(void)drm_set_indicator(4, 'g');
+	(void)drm_set_indicator(5, 'm');
+
 	return rc;
 }
 
