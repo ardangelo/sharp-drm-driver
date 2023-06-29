@@ -46,6 +46,7 @@ struct sharp_memory_panel {
 	const struct drm_display_mode *mode;
 	struct drm_connector connector;
 	struct spi_device *spi;
+	struct drm_framebuffer *fb;
 
 	struct timer_list vcom_timer;
 
@@ -57,6 +58,8 @@ struct sharp_memory_panel {
 	unsigned char *cmd_buf;
 	unsigned char *trailer_buf;
 };
+
+static struct sharp_memory_panel* g_panel = NULL;
 
 static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
 {
@@ -355,6 +358,22 @@ static int sharp_memory_connector_get_modes(struct drm_connector *connector)
 	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
 
+static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev, struct drm_file *file,
+	const struct drm_mode_fb_cmd2 *mode_cmd)
+{
+	struct drm_framebuffer* fb;
+
+	// Initialize framebuffer
+	fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
+
+	// Store global framebuffer for external operations
+	if (g_panel) {
+		g_panel->fb = fb;
+	}
+
+	return fb;
+}
+
 static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
 	.get_modes = sharp_memory_connector_get_modes,
 };
@@ -368,7 +387,7 @@ static const struct drm_connector_funcs sharp_memory_connector_funcs = {
 };
 
 static const struct drm_mode_config_funcs sharp_memory_mode_config_funcs = {
-	.fb_create = drm_gem_fb_create_with_dirty,
+	.fb_create = create_and_store_fb,
 	.atomic_check = drm_atomic_helper_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
@@ -423,6 +442,7 @@ int drm_probe(struct spi_device *spi)
 		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
 		return PTR_ERR(panel);
 	}
+	g_panel = panel;
 
 	// Initalize DRM mode
 	drm = &panel->drm;
@@ -494,6 +514,9 @@ void drm_remove(struct spi_device *spi)
 
 	printk(KERN_DEBUG "sharp_memory: drm_remove\n");
 
+	// Clear global panel
+	g_panel = NULL;
+
 	// Get DRM and panel device from SPI
 	drm = spi_get_drvdata(spi);
 	panel = drm_to_panel(drm);
@@ -509,5 +532,17 @@ void drm_shutdown(struct spi_device *spi)
 
 int drm_refresh(void)
 {
+	struct drm_rect dirty_rect;
+
+	if (g_panel && g_panel->fb) {
+
+		// Refresh framebuffer
+		dirty_rect.x1 = 0;
+		dirty_rect.x2 = g_panel->fb->width;
+		dirty_rect.y1 = 0;
+		dirty_rect.y2 = g_panel->fb->height;
+		return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
+	}
+
 	return 0;
 }

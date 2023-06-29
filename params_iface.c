@@ -3,6 +3,7 @@
 #include <linux/moduleparam.h>
 
 #include "params_iface.h"
+#include "drm_iface.h"
 
 int g_param_mono_cutoff = 32;
 int g_param_mono_invert = 0;
@@ -16,7 +17,12 @@ static int set_param_u8(const char *val, const struct kernel_param *kp)
 		return -EINVAL;
 	}
 
-	return param_set_int(val, kp);
+	rc = param_set_int(val, kp);
+
+	// Refresh framebuffer
+	(void)drm_refresh();
+
+	return rc;
 }
 
 static const struct kernel_param_ops u8_param_ops = {
