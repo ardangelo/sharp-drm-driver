@@ -39,7 +39,7 @@ module_param_cb(mono_invert, &u8_param_ops, &g_param_mono_invert, 0660);
 MODULE_PARM_DESC(mono_invert, "0 for no inversion, 1 for inversion");
 
 module_param_cb(indicators, &u8_param_ops, &g_param_indicators, 0660);
-MODULE_PARM_DESC(mono_invert, "0 for no indicators, 1 for indicators");
+MODULE_PARM_DESC(indicators, "0 for no indicators, 1 for indicators");
 
 int params_probe(void)
 {
