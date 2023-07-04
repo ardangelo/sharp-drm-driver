@@ -149,12 +149,10 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 	for (i = 0; i < MAX_INDICATORS; i++) {
 
 		// Get indicator pixels
-printk(KERN_INFO "Indicator %d: %d\n", i, panel->indicators[i]);
 		ind = indicator_for(panel->indicators[i]);
 		if (!ind) {
 			continue;
 		}
-printk(KERN_INFO "Drawing indicator for %c\n", panel->indicators[i]);
 
 		// Draw indicator pixels
 		for (sy = 0; sy < INDICATOR_HEIGHT; sy++) {
@@ -176,14 +174,6 @@ printk(KERN_INFO "Drawing indicator for %c\n", panel->indicators[i]);
 				}
 
 				dx = (width - ((i + 1) * INDICATOR_WIDTH) + sx) - clip->x1;
-
-printk(KERN_INFO "(%d, %d = %d) <- (%d, %d = %d) = %x\n",
-dx, dy,
-dy * (clip->x2 - clip->x1) + dx,
-sx, sy,
-sy * INDICATOR_HEIGHT + sx,
-ind[sy * INDICATOR_HEIGHT + sx]
-);
 				buf[dy * (clip->x2 - clip->x1) + dx] = ind[sy * INDICATOR_HEIGHT + sx];
 			}
 		}
@@ -610,7 +600,6 @@ int drm_refresh(void)
 int drm_set_indicator(size_t idx, char c)
 {
 	struct drm_rect dirty_rect;
-printk(KERN_INFO "Setting indicator %zu to %c\n", idx, c);
 	if (!g_panel || !g_panel->fb) {
 		return -1;
 	}
@@ -627,6 +616,5 @@ printk(KERN_INFO "Setting indicator %zu to %c\n", idx, c);
 	dirty_rect.y1 = 0;
 	dirty_rect.y2 = INDICATOR_HEIGHT;
 
-printk(KERN_INFO "Refreshing framebuffer\n");
 	return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
 }
