@@ -628,5 +628,10 @@ printk(KERN_INFO "Setting indicator %zu to %c\n", idx, c);
 	dirty_rect.y2 = INDICATOR_HEIGHT;
 
 printk(KERN_INFO "Refreshing framebuffer\n");
+// Calling the internal rendering functions outside the DRM-initiated callbacks is causing some conflict or RC
+#if 0
 	return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
+#else
+	return 0;
+#endif
 }
