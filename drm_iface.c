@@ -508,12 +508,12 @@ int drm_probe(struct spi_device *spi)
 	g_panel = panel;
 
 	// Initialize GPIO
-    panel->gpio_disp = devm_gpiod_get(dev, "disp", GPIOD_OUT_HIGH);
-    if (IS_ERR(panel->gpio_disp))
+	panel->gpio_disp = devm_gpiod_get(dev, "disp", GPIOD_OUT_HIGH);
+	if (IS_ERR(panel->gpio_disp))
 		return dev_err_probe(dev, PTR_ERR(panel->gpio_disp), "Failed to get GPIO 'disp'\n");
 
-    panel->gpio_vcom = devm_gpiod_get(dev, "vcom", GPIOD_OUT_LOW);
-    if (IS_ERR(panel->gpio_vcom))
+	panel->gpio_vcom = devm_gpiod_get(dev, "vcom", GPIOD_OUT_LOW);
+	if (IS_ERR(panel->gpio_vcom))
 		return dev_err_probe(dev, PTR_ERR(panel->gpio_vcom), "Failed to get GPIO 'vcom'\n");
 
 	// Initalize DRM mode
