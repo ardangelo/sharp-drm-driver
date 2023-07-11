@@ -35,10 +35,6 @@
 
 #include "indicators.h"
 
-#define GPIO_DISP 22
-#define GPIO_SCS 8
-#define GPIO_VCOM 23
-
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
@@ -62,7 +58,6 @@ struct sharp_memory_panel {
 
 	char indicators[MAX_INDICATORS];
 
-	struct gpio_desc *gpio_scs;
 	struct gpio_desc *gpio_disp;
 	struct gpio_desc *gpio_vcom;
 };
@@ -103,17 +98,7 @@ static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
 	// Write clear screen command
 	ndelay(80);
 
-	if (panel->gpio_scs)
-	{
-		gpiod_set_value(panel->gpio_scs, 1);
-	}
-
 	rc = spi_sync_transfer(panel->spi, panel->spi_3_xfers, 2);
-
-	if (panel->gpio_scs)
-	{
-		gpiod_set_value(panel->gpio_scs, 0);
-	}
 
 	return rc;
 }
@@ -147,17 +132,7 @@ static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
 
 	ndelay(80);
 
-	if (panel->gpio_scs)
-	{
-		gpiod_set_value(panel->gpio_scs, 1);
-	}
-
 	rc = spi_sync_transfer(panel->spi, panel->spi_3_xfers, 3);
-
-	if (panel->gpio_scs)
-	{
-		gpiod_set_value(panel->gpio_scs, 0);
-	}
 
 	return rc;
 }
@@ -353,10 +328,6 @@ static void power_off(struct sharp_memory_panel *panel)
 	printk(KERN_INFO "sharp_memory: powering off\n");
 
 	/* Turn off power and all signals */
-	if (panel->gpio_scs)
-	{
-		gpiod_set_value(panel->gpio_scs, 0);
-	}
 	gpiod_set_value(panel->gpio_disp, 0);
 	gpiod_set_value(panel->gpio_vcom, 0);
 }
@@ -537,10 +508,6 @@ int drm_probe(struct spi_device *spi)
 	g_panel = panel;
 
 	// Initialize GPIO
-    panel->gpio_scs = devm_gpiod_get_optional(dev, "scs", GPIOD_OUT_LOW);
-	if (IS_ERR(panel->gpio_scs))
-		return dev_err_probe(dev, PTR_ERR(panel->gpio_scs), "Failed to get GPIO 'scs'\n");
-
     panel->gpio_disp = devm_gpiod_get(dev, "disp", GPIOD_OUT_HIGH);
     if (IS_ERR(panel->gpio_disp))
 		return dev_err_probe(dev, PTR_ERR(panel->gpio_disp), "Failed to get GPIO 'disp'\n");
@@ -633,10 +600,6 @@ void drm_remove(struct spi_device *spi)
 	dev = &spi->dev;
 	panel = drm_to_panel(drm)
 
-	if (panel->gpio_scs)
-	{
-		devm_gpiod_put(dev, panel->gpio_scs);
-	}
 	devm_gpiod_put(dev, panel->gpio_disp);
 	devm_gpiod_put(dev, panel->gpio_vcom);
 
