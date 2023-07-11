@@ -527,6 +527,15 @@ int drm_probe(struct spi_device *spi)
 		}
 	}
 
+	// Allocate panel storage
+	panel = devm_drm_dev_alloc(dev, &sharp_memory_driver,
+		struct sharp_memory_panel, drm);
+	if (IS_ERR(panel)) {
+		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
+		return PTR_ERR(panel);
+	}
+	g_panel = panel;
+
 	// Initialize GPIO
     panel->gpio_scs = devm_gpiod_get_optional(dev, "scs", GPIOD_OUT_LOW);
 	if (IS_ERR(panel->gpio_scs))
@@ -539,15 +548,6 @@ int drm_probe(struct spi_device *spi)
     panel->gpio_vcom = devm_gpiod_get(dev, "vcom", GPIOD_OUT_LOW);
     if (IS_ERR(panel->gpio_vcom))
 		return dev_err_probe(dev, PTR_ERR(panel->gpio_vcom), "Failed to get GPIO 'vcom'\n");
-
-	// Allocate panel storage
-	panel = devm_drm_dev_alloc(dev, &sharp_memory_driver,
-		struct sharp_memory_panel, drm);
-	if (IS_ERR(panel)) {
-		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
-		return PTR_ERR(panel);
-	}
-	g_panel = panel;
 
 	// Initalize DRM mode
 	drm = &panel->drm;
