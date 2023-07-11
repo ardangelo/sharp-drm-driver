@@ -635,10 +635,10 @@ void drm_remove(struct spi_device *spi)
 
 	if (panel->gpio_scs)
 	{
-		devm_gpiod_put(dev, panel->gpio_scs)
+		devm_gpiod_put(dev, panel->gpio_scs);
 	}
-	devm_gpiod_put(dev, panel->gpio_disp)
-	devm_gpiod_put(dev, panel->gpio_vcom)
+	devm_gpiod_put(dev, panel->gpio_disp);
+	devm_gpiod_put(dev, panel->gpio_vcom);
 
 
 	drm_dev_unplug(drm);
