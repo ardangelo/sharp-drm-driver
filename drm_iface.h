@@ -2,7 +2,7 @@
 #define DRM_IFACE_H_
 
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/property.h>
 #include <linux/sched/clock.h>
