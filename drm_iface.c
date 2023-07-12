@@ -351,10 +351,6 @@ static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	}
 
 	// Power up sequence
-	if (panel->gpio_scs)
-	{
-		gpiod_set_value(panel->gpio_scs, 0);
-	}
 	gpiod_set_value(panel->gpio_disp, 1);
 	gpiod_set_value(panel->gpio_vcom, 0);
 	usleep_range(5000, 10000);
@@ -598,7 +594,7 @@ void drm_remove(struct spi_device *spi)
 
 	// Clean up the GPIO descriptors
 	dev = &spi->dev;
-	panel = drm_to_panel(drm)
+	panel = drm_to_panel(drm);
 
 	devm_gpiod_put(dev, panel->gpio_disp);
 	devm_gpiod_put(dev, panel->gpio_vcom);
