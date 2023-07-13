@@ -6,7 +6,7 @@
  */
 
 #include <linux/delay.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/property.h>
 #include <linux/sched/clock.h>
@@ -35,10 +35,6 @@
 
 #include "indicators.h"
 
-#define GPIO_DISP 22
-#define GPIO_SCS 8
-#define GPIO_VCOM 23
-
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
@@ -61,6 +57,9 @@ struct sharp_memory_panel {
 	unsigned char *trailer_buf;
 
 	char indicators[MAX_INDICATORS];
+
+	struct gpio_desc *gpio_disp;
+	struct gpio_desc *gpio_vcom;
 };
 
 static struct sharp_memory_panel* g_panel = NULL;
@@ -78,7 +77,7 @@ static void vcom_timer_callback(struct timer_list *t)
 
 	// Toggle the GPIO pin
 	vcom_setting = (vcom_setting) ? 0 : 1;
-	gpio_set_value(GPIO_VCOM, vcom_setting);
+	gpiod_set_value(panel->gpio_vcom, 1);
 
 	// Reschedule the timer
 	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(1000));
@@ -98,9 +97,8 @@ static int sharp_memory_spi_clear_screen(struct sharp_memory_panel *panel)
 
 	// Write clear screen command
 	ndelay(80);
-	gpio_set_value(GPIO_SCS, 1);
+
 	rc = spi_sync_transfer(panel->spi, panel->spi_3_xfers, 2);
-	gpio_set_value(GPIO_SCS, 0);
 
 	return rc;
 }
@@ -133,9 +131,8 @@ static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
 	panel->spi_3_xfers[2].len = 1;
 
 	ndelay(80);
-	gpio_set_value(GPIO_SCS, 1);
+
 	rc = spi_sync_transfer(panel->spi, panel->spi_3_xfers, 3);
-	gpio_set_value(GPIO_SCS, 0);
 
 	return rc;
 }
@@ -321,9 +318,8 @@ static void power_off(struct sharp_memory_panel *panel)
 	printk(KERN_INFO "sharp_memory: powering off\n");
 
 	/* Turn off power and all signals */
-	gpio_set_value(GPIO_SCS, 0);
-	gpio_set_value(GPIO_DISP, 0);
-	gpio_set_value(GPIO_VCOM, 0);
+	gpiod_set_value(panel->gpio_disp, 0);
+	gpiod_set_value(panel->gpio_vcom, 0);
 }
 
 static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
@@ -345,14 +341,13 @@ static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	}
 
 	// Power up sequence
-	gpio_set_value(GPIO_SCS, 0);
-	gpio_set_value(GPIO_DISP, 1);
-	gpio_set_value(GPIO_VCOM, 0);
+	gpiod_set_value(panel->gpio_disp, 1);
+	gpiod_set_value(panel->gpio_vcom, 0);
 	usleep_range(5000, 10000);
 
 	// Clear display
 	if (sharp_memory_spi_clear_screen(panel)) {
-		gpio_set_value(GPIO_DISP, 0); // Power down display, VCOM is not running
+		gpiod_set_value(panel->gpio_disp, 0); // Power down display, VCOM is not running
 		goto out_exit;
 	}
 
@@ -462,9 +457,9 @@ static const struct drm_driver sharp_memory_driver = {
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
 	.name = "sharp_memory",
 	.desc = "Sharp Memory LCD panel",
-	.date = "20230526",
+	.date = "20230713",
 	.major = 1,
-	.minor = 0,
+	.minor = 1,
 };
 
 int drm_probe(struct spi_device *spi)
@@ -497,6 +492,15 @@ int drm_probe(struct spi_device *spi)
 		return PTR_ERR(panel);
 	}
 	g_panel = panel;
+
+	// Initialize GPIO
+	panel->gpio_disp = devm_gpiod_get(dev, "disp", GPIOD_OUT_HIGH);
+	if (IS_ERR(panel->gpio_disp))
+		return dev_err_probe(dev, PTR_ERR(panel->gpio_disp), "Failed to get GPIO 'disp'\n");
+
+	panel->gpio_vcom = devm_gpiod_get(dev, "vcom", GPIOD_OUT_LOW);
+	if (IS_ERR(panel->gpio_vcom))
+		return dev_err_probe(dev, PTR_ERR(panel->gpio_vcom), "Failed to get GPIO 'vcom'\n");
 
 	// Initalize DRM mode
 	drm = &panel->drm;
@@ -567,6 +571,8 @@ int drm_probe(struct spi_device *spi)
 void drm_remove(struct spi_device *spi)
 {
 	struct drm_device *drm;
+	struct device *dev;
+	struct sharp_memory_panel *panel;
 
 	printk(KERN_INFO "sharp_memory: drm_remove\n");
 
@@ -576,15 +582,32 @@ void drm_remove(struct spi_device *spi)
 	// Get DRM and panel device from SPI
 	drm = spi_get_drvdata(spi);
 
+	// Clean up the GPIO descriptors
+	dev = &spi->dev;
+	panel = drm_to_panel(drm);
+
+	devm_gpiod_put(dev, panel->gpio_disp);
+	devm_gpiod_put(dev, panel->gpio_vcom);
+
 	drm_dev_unplug(drm);
 	drm_atomic_helper_shutdown(drm);
 }
 
+static int force_redraw(struct drm_framebuffer* fb, struct drm_clip_rect* dirty_rect)
+{
+	if (!fb || !fb->funcs->dirty) {
+		return -1;
+	}
+
+	// Call framebuffer region update handler
+	return fb->funcs->dirty(fb, NULL, 0, 0, dirty_rect, 1);
+}
+
 int drm_refresh(void)
 {
-	struct drm_rect dirty_rect;
+	struct drm_clip_rect dirty_rect;
 
-	if (!g_panel || !g_panel->fb) {
+	if (!g_panel) {
 		return 0;
 	}
 
@@ -593,14 +616,14 @@ int drm_refresh(void)
 	dirty_rect.x2 = g_panel->fb->width;
 	dirty_rect.y1 = 0;
 	dirty_rect.y2 = g_panel->fb->height;
-
-	return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
+	return force_redraw(g_panel->fb, &dirty_rect);
 }
 
 int drm_set_indicator(size_t idx, char c)
 {
-	struct drm_rect dirty_rect;
-	if (!g_panel || !g_panel->fb) {
+	struct drm_clip_rect dirty_rect;
+
+	if (!g_panel || !g_panel->fb || !g_panel->fb->funcs->dirty) {
 		return -1;
 	}
 
@@ -610,11 +633,10 @@ int drm_set_indicator(size_t idx, char c)
 	}
 	g_panel->indicators[idx] = c;
 
-	// Refresh framebuffer
-	dirty_rect.x1 = 0;//g_panel->fb->width - INDICATORS_WIDTH;
+	// Refresh indicator portion of framebuffer
+	dirty_rect.x1 = 0;
 	dirty_rect.x2 = g_panel->fb->width;
 	dirty_rect.y1 = 0;
 	dirty_rect.y2 = INDICATOR_HEIGHT;
-
-	return sharp_memory_fb_dirty(g_panel->fb, &dirty_rect);
+	return force_redraw(g_panel->fb, &dirty_rect);
 }
