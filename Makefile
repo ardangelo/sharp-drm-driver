@@ -1,12 +1,11 @@
 obj-m += sharp.o
-sharp-objs += main.o drm_iface.o params_iface.o ioctl_iface.o
+sharp-objs += src/main.o src/drm_iface.o src/params_iface.o src/ioctl_iface.o
+ccflags-y := -DDEBUG -g -std=gnu99 -Wno-declaration-after-statement
 
-export KROOT=/lib/modules/$(shell uname -r)/build
+.PHONY: all clean
 
-all:  modules
+all:
+	$(MAKE) -C '$(LINUX_DIR)' M='$(PWD)' modules
 
-modules modules_install clean::
-	@$(MAKE) -C $(KROOT) M=$(shell pwd) $@
-
-clean::
-	rm -rf   Module.symvers modules.order
+clean:
+	$(MAKE) -C '$(LINUX_DIR)' M='$(PWD)' clean
