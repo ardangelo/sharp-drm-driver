@@ -43,8 +43,8 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 
-			sharp: sharp@0{
-				compatible = "sharp";
+			sharp_drm: sharp_drm@0{
+				compatible = "sharp-drm";
 				reg = <0>;
 				pinctrl-names = "default";
 				pinctrl-0 = <&sharp_pins>;

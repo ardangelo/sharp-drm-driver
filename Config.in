@@ -1,5 +1,5 @@
-config BR2_PACKAGE_SHARP
-	bool "sharp"
+config BR2_PACKAGE_SHARP_DRM
+	bool "sharp-drm"
 	default y
 	depends on BR2_LINUX_KERNEL
 	select BR2_PACKAGE_LIBDRM
