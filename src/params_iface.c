@@ -44,7 +44,7 @@ MODULE_PARM_DESC(indicators, "0 for no indicators, 1 for indicators");
 
 module_param_cb(dither, &u8_param_ops, &g_param_dither, 0660);
 MODULE_PARM_DESC(dither,
-	"0 for no dithering, 1 for limited 2x2 dithering, 2 for full range 2x2, 3 for 4x4");
+	"0: no dithering, 1: limited 2x2, 3: full 2x2, 3: limited 4x4, 4: full 4x4");
 
 int params_probe(void)
 {
