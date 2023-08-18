@@ -38,16 +38,19 @@
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
+// Whiter whites
 static int ditherMatrix1[4] = {
 	   1, 154,
 	 103,  52 
 };
 
+// Uniform range
 static int ditherMatrix2[4] = {
 	  51, 204,
 	 153, 102
 };
 
+// Whiter whites
 static int ditherMatrix3[16] = {
 	   1,  83,  21, 103,
 	 123,  42, 143,  62,
@@ -55,6 +58,7 @@ static int ditherMatrix3[16] = {
 	 154,  72, 134,  52 
 };
 
+// Uniform range
 static int ditherMatrix4[16] = {
 	  15, 195,  60, 240,
 	 135,  75, 180, 120,
