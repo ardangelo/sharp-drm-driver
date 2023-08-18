@@ -216,7 +216,7 @@ static size_t sharp_memory_gray8_to_mono_tagged_dither(u8 *buf, int width, int h
 	} else {
 		*dM=ditherMatrix4;
 	}
-	msize=sizeof(dM);
+	msize=sqrt(sizeof(dM));
 
 	// Iterate over lines from [0, height)
 	for (line = 0; line < height; line++) {
@@ -231,19 +231,8 @@ static size_t sharp_memory_gray8_to_mono_tagged_dither(u8 *buf, int width, int h
 			for (b1 = 0; b1 < 8; b1++) {
 
 				// Apply dithering
-				if (g_param_dither == 1) {
-					if (buf[line * width + b8 + b1] >= ditherMatrix1[(b8 + b1) % 2 + line % 2 * 2])
-						d |= 0b10000000 >> b1;
-				} else if (g_param_dither == 2) {
-					if (buf[line * width + b8 + b1] >= ditherMatrix2[(b8 + b1) % 2 + line % 2 * 2])
-						d |= 0b10000000 >> b1;
-				} else if (g_param_dither == 3) {
-					if (buf[line * width + b8 + b1] >= ditherMatrix3[(b8 + b1) % 4 + line % 4 * 4])
+				if (buf[line * width + b8 + b1] >= dM[(b8 + b1) % msize + line % msize * msize])
 					d |= 0b10000000 >> b1;
-				} else {
-					if (buf[line * width + b8 + b1] >= ditherMatrix4[(b8 + b1) % 4 + line % 4 * 4])
-					d |= 0b10000000 >> b1;
-				}
 			}
 
 			// Apply inversion
