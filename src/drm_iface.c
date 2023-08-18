@@ -38,35 +38,28 @@
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
-/*
-static int ditherMatrix1[2][2] = {
-	{ 128, 179 },
-	{ 204, 153 },
-};
-*/
-
-static int ditherMatrix1[2][2] = {
-	{  1, 154 },
-	{ 103,  52 },
+static int ditherMatrix1[4] = {
+	   1, 154,
+	 103,  52 
 };
 
-static int ditherMatrix2[2][2] = {
-	{  51, 204 },
-	{ 153,  102 },
+static int ditherMatrix2[4] = {
+	  51, 204,
+	 153, 102
 };
 
-static int ditherMatrix3[4][4] = {
-	{   1,  83,  21, 103 },
-	{ 123,  42, 143,  62 },
-	{  32, 113,  11,  93 },
-	{ 154,  72, 134,  52 }
+static int ditherMatrix3[16] = {
+	   1,  83,  21, 103,
+	 123,  42, 143,  62,
+	  32, 113,  11,  93,
+	 154,  72, 134,  52 
 };
 
-static int ditherMatrix4[4][4] = {
-	{  15, 195,  60, 240 },
-	{ 135,  75, 180, 120 },
-	{  45, 225,  30, 210 },
-	{ 165, 105, 150,  90 }
+static int ditherMatrix4[16] = {
+	  15, 195,  60, 240,
+	 135,  75, 180, 120,
+	  45, 225,  30, 210,
+	 165, 105, 150,  90 
 };
 
 struct sharp_memory_panel {
@@ -210,9 +203,20 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 
 static size_t sharp_memory_gray8_to_mono_tagged_dither(u8 *buf, int width, int height, int y0)
 {
-	int line, b8, b1;
+	int line, b8, b1, msize, *dM;
 	unsigned char d;
 	int const tagged_line_len = 2 + width / 8;
+
+	if (g_param_dither == 1) {
+		*dM=ditherMatrix1;
+	} else if (g_param_dither == 2) {
+		*dM=ditherMatrix2;
+	} else if (g_param_dither == 3) {
+		*dM=ditherMatrix3;
+	} else {
+		*dM=ditherMatrix4;
+	}
+	msize=sizeof(dM);
 
 	// Iterate over lines from [0, height)
 	for (line = 0; line < height; line++) {
@@ -228,16 +232,16 @@ static size_t sharp_memory_gray8_to_mono_tagged_dither(u8 *buf, int width, int h
 
 				// Apply dithering
 				if (g_param_dither == 1) {
-					if (buf[(line * width) + b8 + b1] >= ditherMatrix1[((line * width) + b8 + b1) % 2][line % 2])
+					if (buf[line * width + b8 + b1] >= ditherMatrix1[(b8 + b1) % 2 + line % 2 * 2])
 						d |= 0b10000000 >> b1;
 				} else if (g_param_dither == 2) {
-					if (buf[(line * width) + b8 + b1] >= ditherMatrix2[((line * width) + b8 + b1) % 2][line % 2])
+					if (buf[line * width + b8 + b1] >= ditherMatrix2[(b8 + b1) % 2 + line % 2 * 2])
 						d |= 0b10000000 >> b1;
 				} else if (g_param_dither == 3) {
-					if (buf[(line * width) + b8 + b1] >= ditherMatrix3[((line * width) + b8 + b1) % 4][line % 4])
+					if (buf[line * width + b8 + b1] >= ditherMatrix3[(b8 + b1) % 4 + line % 4 * 4])
 					d |= 0b10000000 >> b1;
 				} else {
-					if (buf[(line * width) + b8 + b1] >= ditherMatrix4[((line * width) + b8 + b1) % 4][line % 4])
+					if (buf[line * width + b8 + b1] >= ditherMatrix4[(b8 + b1) % 4 + line % 4 * 4])
 					d |= 0b10000000 >> b1;
 				}
 			}
