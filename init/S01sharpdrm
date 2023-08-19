@@ -1,12 +1,12 @@
 #!/bin/sh
 #
-# sharp_drm        Loads sharp_drm driver.
+# sharpdrm        Loads Sharp DRM driver
 #
 
 umask 077
 
 start() {
-	/sbin/modprobe sharp
+	/sbin/modprobe sharp-drm
 	echo "OK"
 }
 stop() {

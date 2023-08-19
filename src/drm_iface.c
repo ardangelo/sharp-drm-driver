@@ -455,7 +455,7 @@ static const struct drm_driver sharp_memory_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &sharp_memory_fops,
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
-	.name = "sharp_memory",
+	.name = "sharp_drm",
 	.desc = "Sharp Memory LCD panel",
 	.date = "20230713",
 	.major = 1,

@@ -49,7 +49,7 @@ static void sharp_memory_shutdown(struct spi_device *spi)
 
 static struct spi_driver sharp_memory_spi_driver = {
 	.driver = {
-		.name = "sharp",
+		.name = "sharp-drm",
 	},
 	.probe = sharp_memory_probe,
 	.remove = sharp_memory_remove,
@@ -57,6 +57,7 @@ static struct spi_driver sharp_memory_spi_driver = {
 };
 module_spi_driver(sharp_memory_spi_driver);
 
+MODULE_VERSION("1.0");
 MODULE_DESCRIPTION("Sharp Memory LCD DRM driver");
 MODULE_AUTHOR("Andrew D'Angelo");
 MODULE_LICENSE("GPL");
