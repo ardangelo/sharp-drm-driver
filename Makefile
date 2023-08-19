@@ -37,10 +37,10 @@ install_aux:
 	install -D -m 0644 $(BUILD_DIR)/sharp-drm.dtbo /boot/overlays/
 	# Add configuration line if it wasn't already there
 	grep -qxF '$(BOOT_CONFIG_LINE)' /boot/config.txt \
-		|| echo -e '[all]\ndtparam=spi=on\n$(BOOT_CONFIG_LINE)' >> /boot/config.txt
+		|| printf '[all]\ndtparam=spi=on\n$(BOOT_CONFIG_LINE)' >> /boot/config.txt
 	# Add auto-load module line if it wasn't already there
 	grep -qxF 'sharp-drm' /etc/modules \
-		|| echo 'sharp-drm' >> /etc/modules
+		|| printf 'sharp-drm' >> /etc/modules
 	# Rebuild dependencies
 	depmod -A
 
