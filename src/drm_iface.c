@@ -213,14 +213,17 @@ static size_t sharp_memory_gray8_to_mono_tagged_dither(u8 *buf, int width, int h
 
 	if (g_param_dither == 1) {
 		*dM=ditherMatrix1;
+		msize=2;
 	} else if (g_param_dither == 2) {
 		*dM=ditherMatrix2;
+		msize=2;
 	} else if (g_param_dither == 3) {
 		*dM=ditherMatrix3;
+		msize=4;
 	} else {
 		*dM=ditherMatrix4;
+		msize=4;
 	}
-	msize=sqrt(sizeof(dM));
 
 	// Iterate over lines from [0, height)
 	for (line = 0; line < height; line++) {
