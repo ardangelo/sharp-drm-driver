@@ -4,6 +4,7 @@
 extern int g_param_mono_cutoff;
 extern int g_param_mono_invert;
 extern int g_param_indicators;
+extern int g_param_dither;
 
 int params_probe(void);
 void params_remove(void);

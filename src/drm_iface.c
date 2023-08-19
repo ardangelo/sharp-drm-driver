@@ -38,6 +38,34 @@
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
+// Whiter whites
+static int ditherMatrix1[4] = {
+	   1, 154,
+	 103,  52 
+};
+
+// Uniform range
+static int ditherMatrix2[4] = {
+	  51, 204,
+	 153, 102
+};
+
+// Whiter whites
+static int ditherMatrix3[16] = {
+	   1,  83,  21, 103,
+	 123,  42, 143,  62,
+	  32, 113,  11,  93,
+	 154,  72, 134,  52 
+};
+
+// Uniform range
+static int ditherMatrix4[16] = {
+	  15, 195,  60, 240,
+	 135,  75, 180, 120,
+	  45, 225,  30, 210,
+	 165, 105, 150,  90 
+};
+
 struct sharp_memory_panel {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
@@ -177,6 +205,69 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 	}
 }
 
+static size_t sharp_memory_gray8_to_mono_tagged_dither(u8 *buf, int width, int height, int y0)
+{
+	int line, b8, b1, msize, *dM;
+	unsigned char d;
+	int const tagged_line_len = 2 + width / 8;
+
+	if (g_param_dither == 1) {
+		*dM=ditherMatrix1;
+		msize=2;
+	} else if (g_param_dither == 2) {
+		*dM=ditherMatrix2;
+		msize=2;
+	} else if (g_param_dither == 3) {
+		*dM=ditherMatrix3;
+		msize=4;
+	} else {
+		*dM=ditherMatrix4;
+		msize=4;
+	}
+
+	// Iterate over lines from [0, height)
+	for (line = 0; line < height; line++) {
+
+		// Iterate over chunks of 8 source grayscale bytes
+		// Each 8-byte source chunk will map to one destination mono byte
+		for (b8 = 0; b8 < width; b8 += 8) {
+			d = 0;
+
+			// Iterate over each of the 8 grayscale bytes in the chunk
+			// Build up the destination mono byte
+			for (b1 = 0; b1 < 8; b1++) {
+
+				// Apply dithering
+				if (buf[line * width + b8 + b1] >= dM[(b8 + b1) % msize + line % msize * msize])
+					d |= 0b10000000 >> b1;
+			}
+
+			// Apply inversion
+			if (g_param_mono_invert) {
+				d = ~d;
+			}
+
+			// Without the line number and trailer tags, each destination
+			// mono line would have a length `width / 8`. However, we are
+			// inserting the line number at the beginning of the line and
+			// the zero-byte trailer at the end.
+			// So the destination mono line is at index
+			// `line * tagged_line_len = line * (2 + width / 8)`
+			// The destination mono byte is offset by 1 to make room for
+			// the line tag, written at the end of converting the current
+			// line.
+			buf[(line * tagged_line_len) + 1 + (b8 / 8)] = d;
+		}
+
+		// Write the line number and trailer tags
+		buf[line * tagged_line_len] = sharp_memory_reverse_byte((u8)(y0 + 1)); // Indexed from 1
+		buf[(line * tagged_line_len) + tagged_line_len - 1] = 0;
+		y0++;
+	}
+
+	return height * tagged_line_len;
+}
+
 static size_t sharp_memory_gray8_to_mono_tagged(u8 *buf, int width, int height, int y0)
 {
 	int line, b8, b1;
@@ -265,9 +356,15 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 		}
 	}
 
-	// Convert in-place from 8-bit grayscale to mono
-	*result_len = sharp_memory_gray8_to_mono_tagged(buf,
-		(clip->x2 - clip->x1), (clip->y2 - clip->y1), clip->y1);
+	if (g_param_dither) {
+		// Convert in-place from 8-bit grayscale to dithered mono
+		*result_len = sharp_memory_gray8_to_mono_tagged_dither(buf,
+			(clip->x2 - clip->x1), (clip->y2 - clip->y1), clip->y1);
+	} else {
+		// Convert in-place from 8-bit grayscale to mono
+		*result_len = sharp_memory_gray8_to_mono_tagged(buf,
+			(clip->x2 - clip->x1), (clip->y2 - clip->y1), clip->y1);
+	}
 
 	// Success
 	return 0;
