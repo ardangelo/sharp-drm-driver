@@ -4,7 +4,7 @@ ccflags-y := -g -std=gnu99 -Wno-declaration-after-statement
 
 dtb-y += sharp-drm.dtbo
 
-targets += $(dtbo-y)    
+targets += $(dtbo-y)
 always  := $(dtbo-y)
 
 .PHONY: all clean install uninstall
@@ -20,6 +20,7 @@ BUILD_DIR := .
 endif
 
 BOOT_CONFIG_LINE := dtoverlay=sharp-drm
+BOOT_CMDLINE_ADD := console=tty2 fbcon=font:VGA8x8 fbcon=map:10
 
 all:
 	$(MAKE) -C '$(LINUX_DIR)' M='$(shell pwd)'
@@ -37,14 +38,19 @@ install_aux:
 	install -D -m 0644 $(BUILD_DIR)/sharp-drm.dtbo /boot/overlays/
 	# Add configuration line if it wasn't already there
 	grep -qxF '$(BOOT_CONFIG_LINE)' /boot/config.txt \
-		|| echo '[all]\ndtparam=spi=on\n$(BOOT_CONFIG_LINE)' >> /boot/config.txt
+		|| printf '[all]\ndtparam=spi=on\n$(BOOT_CONFIG_LINE)\n' >> /boot/config.txt
 	# Add auto-load module line if it wasn't already there
 	grep -qxF 'sharp-drm' /etc/modules \
 		|| echo 'sharp-drm' >> /etc/modules
+	# Configure fbcon for display
+	grep -qxF '$(BOOT_CMDLINE_ADD)' /boot/cmdline.txt \
+		|| sed -i.save 's/$$/ $(BOOT_CMDLINE_ADD)/' /boot/cmdline.txt
 	# Rebuild dependencies
 	depmod -A
 
 uninstall:
+	# Remove fbcon configuration and create a backup file
+	sed -i.save 's/ $(BOOT_CMDLINE_ADD)//' /boot/cmdline.txt
 	# Remove auto-load module line and create a backup file
 	sed -i.save '/sharp-drm/d' /etc/modules
 	# Remove configuration line and create a backup file
