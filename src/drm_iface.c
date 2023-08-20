@@ -623,7 +623,8 @@ int drm_set_indicator(size_t idx, char c)
 {
 	struct drm_clip_rect dirty_rect;
 
-	if (!g_panel || !g_panel->fb || !g_panel->fb->funcs->dirty) {
+	if (!g_panel || !g_panel->fb || !g_panel->fb->funcs
+	 || !g_panel->fb->funcs->dirty) {
 		return -1;
 	}
 
