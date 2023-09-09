@@ -77,7 +77,7 @@ static void vcom_timer_callback(struct timer_list *t)
 
 	// Toggle the GPIO pin
 	vcom_setting = (vcom_setting) ? 0 : 1;
-	gpiod_set_value(panel->gpio_vcom, 1);
+	gpiod_set_value(panel->gpio_vcom, vcom_setting);
 
 	// Reschedule the timer
 	mod_timer(&panel->vcom_timer, jiffies + msecs_to_jiffies(1000));
