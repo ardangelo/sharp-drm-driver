@@ -35,11 +35,11 @@ else
 endif
 
 
+all: sharp-drm.dtbo
+	$(MAKE) -C '$(LINUX_DIR)' M='$(shell pwd)'
+
 sharp-drm.dtbo: sharp-drm.dts
 	dtc -@ -I dts -O dtb -W no-unit_address_vs_reg -o $@ $<
-
-all:
-	$(MAKE) -C '$(LINUX_DIR)' M='$(shell pwd)'
 
 install_modules:
 	$(MAKE) -C '$(LINUX_DIR)' M='$(shell pwd)' modules_install
