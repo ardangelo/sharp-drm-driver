@@ -61,8 +61,6 @@ install_aux: sharp-drm.dtbo
 	# Configure fbcon for display
 	grep -qF '$(BOOT_CMDLINE_ADD)' $(CMDLINE) \
 		|| sed -i.save 's/$$/ $(BOOT_CMDLINE_ADD)/' $(CMDLINE)
-	# Rebuild dependencies
-	depmod -A
 
 uninstall:
 	# Remove fbcon configuration and create a backup file
