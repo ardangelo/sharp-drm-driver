@@ -318,7 +318,9 @@ static void power_off(struct sharp_memory_panel *panel)
 	printk(KERN_INFO "sharp_memory: powering off\n");
 
 	/* Turn off power and all signals */
-	gpiod_set_value(panel->gpio_disp, 0);
+	if (panel->gpio_disp) {
+		gpiod_set_value(panel->gpio_disp, 0);
+	}
 	gpiod_set_value(panel->gpio_vcom, 0);
 }
 
@@ -341,13 +343,17 @@ static void sharp_memory_pipe_enable(struct drm_simple_display_pipe *pipe,
 	}
 
 	// Power up sequence
-	gpiod_set_value(panel->gpio_disp, 1);
+	if (panel->gpio_disp) {
+		gpiod_set_value(panel->gpio_disp, 1);
+	}
 	gpiod_set_value(panel->gpio_vcom, 0);
 	usleep_range(5000, 10000);
 
 	// Clear display
 	if (sharp_memory_spi_clear_screen(panel)) {
-		gpiod_set_value(panel->gpio_disp, 0); // Power down display, VCOM is not running
+		if (panel->gpio_disp) {
+			gpiod_set_value(panel->gpio_disp, 0); // Power down display, VCOM is not running
+		}
 		goto out_exit;
 	}
 
@@ -494,7 +500,7 @@ int drm_probe(struct spi_device *spi)
 	g_panel = panel;
 
 	// Initialize GPIO
-	panel->gpio_disp = devm_gpiod_get(dev, "disp", GPIOD_OUT_HIGH);
+	panel->gpio_disp = devm_gpiod_get_optional(dev, "disp", GPIOD_OUT_HIGH);
 	if (IS_ERR(panel->gpio_disp))
 		return dev_err_probe(dev, PTR_ERR(panel->gpio_disp), "Failed to get GPIO 'disp'\n");
 
@@ -586,7 +592,9 @@ void drm_remove(struct spi_device *spi)
 	dev = &spi->dev;
 	panel = drm_to_panel(drm);
 
-	devm_gpiod_put(dev, panel->gpio_disp);
+	if (panel->gpio_disp) {
+		devm_gpiod_put(dev, panel->gpio_disp);
+	}
 	devm_gpiod_put(dev, panel->gpio_vcom);
 
 	drm_dev_unplug(drm);
