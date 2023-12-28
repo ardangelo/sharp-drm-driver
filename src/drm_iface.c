@@ -463,9 +463,7 @@ static const struct drm_display_mode sharp_memory_ls027b7dh01_mode = {
 DEFINE_DRM_GEM_DMA_FOPS(sharp_memory_fops);
 
 static const struct drm_ioctl_desc sharp_memory_ioctls[] = {
-	DRM_IOCTL_DEF_DRV_GET_VERSION,
-	DRM_IOCTL_DEF_DRV_SET_INVERT,
-	DRM_IOCTL_DEF_DRV_SET_INDICATOR,
+	DRM_IOCTL_DEF_DRV_REDRAW
 };
 
 static const struct drm_driver sharp_memory_driver = {
@@ -637,12 +635,13 @@ int drm_redraw_fb(struct drm_device *drm, int height)
 	return fb->funcs->dirty(fb, NULL, 0, 0, &dirty_rect, 1);
 }
 
-int drm_set_indicator(struct drm_device *drm, uint8_t idx, uint8_t chr)
+int drm_set_indicator(int idx, char c)
 {
 	if (idx >= MAX_INDICATORS) {
 		return 0;
 	}
 
-	g_indicators[idx] = chr;
-	return drm_redraw_fb(drm, INDICATOR_HEIGHT);
+	g_indicators[idx] = c;
+
+	return 0;
 }

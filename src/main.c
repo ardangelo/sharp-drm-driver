@@ -61,3 +61,15 @@ MODULE_VERSION("1.4");
 MODULE_DESCRIPTION("Sharp Memory LCD DRM driver");
 MODULE_AUTHOR("Andrew D'Angelo");
 MODULE_LICENSE("GPL");
+
+void sharp_memory_set_invert(int setting)
+{
+	params_set_mono_invert(setting);
+}
+EXPORT_SYMBOL(sharp_memory_set_invert);
+
+void sharp_memory_set_indicator(int idx, char c)
+{
+	drm_set_indicator(idx, c);
+}
+EXPORT_SYMBOL(sharp_memory_set_indicator);

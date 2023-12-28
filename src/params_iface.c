@@ -20,9 +20,6 @@ static int set_param_u8(const char *val, const struct kernel_param *kp)
 
 	rc = param_set_int(val, kp);
 
-	// Refresh framebuffer
-	//(void)drm_refresh();
-
 	return rc;
 }
 
@@ -54,7 +51,4 @@ void params_remove(void)
 void params_set_mono_invert(int setting)
 {
 	g_param_mono_invert = setting;
-
-	// Refresh framebuffer
-	//(void)drm_refresh();
 }

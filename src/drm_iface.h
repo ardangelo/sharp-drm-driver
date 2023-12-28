@@ -29,6 +29,6 @@ int drm_probe(struct spi_device *spi);
 void drm_remove(struct spi_device *spi);
 
 int drm_redraw_fb(struct drm_device *drm, int height);
-int drm_set_indicator(struct drm_device *drm, uint8_t idx, uint8_t chr);
+int drm_set_indicator(int idx, char c);
 
 #endif
