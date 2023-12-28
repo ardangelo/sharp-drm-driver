@@ -53,24 +53,24 @@ install_aux: sharp-drm.dtbo
 	# Install device tree overlay
 	install -D -m 0644 $(BUILD_DIR)/sharp-drm.dtbo /boot/overlays/
 	# Add configuration line if it wasn't already there
-	grep -qxF '$(BOOT_CONFIG_LINE)' $(CONFIG) \
+	@grep -qxF '$(BOOT_CONFIG_LINE)' $(CONFIG) \
 		|| printf '[all]\ndtparam=spi=on\n$(BOOT_CONFIG_LINE)\n' >> $(CONFIG)
 	# Add auto-load module line if it wasn't already there
-	grep -qxF 'sharp-drm' /etc/modules \
+	@grep -qxF 'sharp-drm' /etc/modules \
 		|| echo 'sharp-drm' >> /etc/modules
 	# Configure fbcon for display
-	grep -qF '$(BOOT_CMDLINE_ADD)' $(CMDLINE) \
+	@grep -qF '$(BOOT_CMDLINE_ADD)' $(CMDLINE) \
 		|| sed -i.save 's/$$/ $(BOOT_CMDLINE_ADD)/' $(CMDLINE)
 
 uninstall:
 	# Remove fbcon configuration and create a backup file
-	sed -i.save 's/ $(BOOT_CMDLINE_ADD)//' $(CMDLINE)
+	@sed -i.save 's/ $(BOOT_CMDLINE_ADD)//' $(CMDLINE)
 	# Remove auto-load module line and create a backup file
-	sed -i.save '/sharp-drm/d' /etc/modules
+	@sed -i.save '/sharp-drm/d' /etc/modules
 	# Remove configuration line and create a backup file
-	sed -i.save '/$(BOOT_CONFIG_LINE)/d' $(CONFIG)
+	@sed -i.save '/$(BOOT_CONFIG_LINE)/d' $(CONFIG)
 	# Remove device tree overlay
-	rm -f /boot/overlays/sharp-drm.dtbo
+	@rm -f /boot/overlays/sharp-drm.dtbo
 
 clean:
 	$(MAKE) -C '$(LINUX_DIR)' M='$(shell pwd)' clean

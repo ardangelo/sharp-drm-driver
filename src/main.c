@@ -57,7 +57,7 @@ static struct spi_driver sharp_memory_spi_driver = {
 };
 module_spi_driver(sharp_memory_spi_driver);
 
-MODULE_VERSION("1.1");
+MODULE_VERSION("1.4");
 MODULE_DESCRIPTION("Sharp Memory LCD DRM driver");
 MODULE_AUTHOR("Andrew D'Angelo");
 MODULE_LICENSE("GPL");

@@ -11,6 +11,7 @@
 #include <linux/property.h>
 #include <linux/sched/clock.h>
 #include <linux/spi/spi.h>
+#include <linux/mutex.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
@@ -56,13 +57,11 @@ struct sharp_memory_panel {
 	unsigned char *cmd_buf;
 	unsigned char *trailer_buf;
 
-	char indicators[MAX_INDICATORS];
-
 	struct gpio_desc *gpio_disp;
 	struct gpio_desc *gpio_vcom;
 };
 
-static struct sharp_memory_panel* g_panel = NULL;
+static char g_indicators[MAX_INDICATORS];
 
 static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
 {
@@ -146,7 +145,7 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 	for (i = 0; i < MAX_INDICATORS; i++) {
 
 		// Get indicator pixels
-		ind = indicator_for(panel->indicators[i]);
+		ind = indicator_for(g_indicators[i]);
 		if (!ind) {
 			continue;
 		}
@@ -399,11 +398,22 @@ static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
 	}
 }
 
+static int sharp_memory_pipe_prepare_fb(struct drm_simple_display_pipe *pipe,
+	struct drm_plane_state *plane_state)
+{
+	return drm_gem_simple_display_pipe_prepare_fb(pipe, plane_state);
+}
+
+static void sharp_memory_pipe_cleanup_fb(struct drm_simple_display_pipe *pipe,
+	struct drm_plane_state *plane_state)
+{}
+
 static const struct drm_simple_display_pipe_funcs sharp_memory_pipe_funcs = {
 	.enable = sharp_memory_pipe_enable,
 	.disable = sharp_memory_pipe_disable,
 	.update = sharp_memory_pipe_update,
-	.prepare_fb = drm_gem_simple_display_pipe_prepare_fb,
+	.prepare_fb = sharp_memory_pipe_prepare_fb,
+	.cleanup_fb = sharp_memory_pipe_cleanup_fb,
 };
 
 static int sharp_memory_connector_get_modes(struct drm_connector *connector)
@@ -413,20 +423,15 @@ static int sharp_memory_connector_get_modes(struct drm_connector *connector)
 	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
 
-static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev, struct drm_file *file,
-	const struct drm_mode_fb_cmd2 *mode_cmd)
+static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev,
+	struct drm_file *file, const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	struct drm_framebuffer* fb;
+	struct sharp_memory_panel *panel;
 
 	// Initialize framebuffer
-	fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
-
-	// Store global framebuffer for external operations
-	if (g_panel) {
-		g_panel->fb = fb;
-	}
-
-	return fb;
+	panel = drm_to_panel(dev);
+	panel->fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
+	return panel->fb;
 }
 
 static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
@@ -457,6 +462,12 @@ static const struct drm_display_mode sharp_memory_ls027b7dh01_mode = {
 
 DEFINE_DRM_GEM_DMA_FOPS(sharp_memory_fops);
 
+static const struct drm_ioctl_desc sharp_memory_ioctls[] = {
+	DRM_IOCTL_DEF_DRV_GET_VERSION,
+	DRM_IOCTL_DEF_DRV_SET_INVERT,
+	DRM_IOCTL_DEF_DRV_SET_INDICATOR,
+};
+
 static const struct drm_driver sharp_memory_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &sharp_memory_fops,
@@ -466,6 +477,9 @@ static const struct drm_driver sharp_memory_driver = {
 	.date = "20230713",
 	.major = 1,
 	.minor = 1,
+
+	.ioctls = sharp_memory_ioctls,
+	.num_ioctls = ARRAY_SIZE(sharp_memory_ioctls)
 };
 
 int drm_probe(struct spi_device *spi)
@@ -497,7 +511,6 @@ int drm_probe(struct spi_device *spi)
 		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
 		return PTR_ERR(panel);
 	}
-	g_panel = panel;
 
 	// Initialize GPIO
 	panel->gpio_disp = devm_gpiod_get_optional(dev, "disp", GPIOD_OUT_HIGH);
@@ -518,12 +531,13 @@ int drm_probe(struct spi_device *spi)
 
 	// Initialize panel contents
 	panel->spi = spi;
+	panel->fb = NULL;
 	mode = &sharp_memory_ls027b7dh01_mode;
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
 	for (i = 0; i < MAX_INDICATORS; i++) {
-		panel->indicators[i] = '\0';
+		g_indicators[i] = '\0';
 	}
 
 	// Allocate reused heap buffers suitable for SPI source
@@ -582,9 +596,6 @@ void drm_remove(struct spi_device *spi)
 
 	printk(KERN_INFO "sharp_memory: drm_remove\n");
 
-	// Clear global panel
-	g_panel = NULL;
-
 	// Get DRM and panel device from SPI
 	drm = spi_get_drvdata(spi);
 
@@ -601,51 +612,37 @@ void drm_remove(struct spi_device *spi)
 	drm_atomic_helper_shutdown(drm);
 }
 
-static int force_redraw(struct drm_framebuffer* fb, struct drm_clip_rect* dirty_rect)
+int drm_redraw_fb(struct drm_device *drm, int height)
 {
-	if (!fb || !fb->funcs->dirty) {
-		return -1;
-	}
-
-	// Call framebuffer region update handler
-	return fb->funcs->dirty(fb, NULL, 0, 0, dirty_rect, 1);
-}
-
-int drm_refresh(void)
-{
+	struct sharp_memory_panel *panel;
+	struct drm_framebuffer *fb;
 	struct drm_clip_rect dirty_rect;
 
-	if (!g_panel) {
+	if (!drm
+	 || ((panel = drm_to_panel(drm)) == NULL)
+	 || ((fb = panel->fb) == NULL)
+	 || !fb->funcs || !fb->funcs->dirty) {
 		return 0;
 	}
 
-	// Refresh framebuffer
+	// Create dirty region
 	dirty_rect.x1 = 0;
-	dirty_rect.x2 = g_panel->fb->width;
+	dirty_rect.x2 = fb->width;
 	dirty_rect.y1 = 0;
-	dirty_rect.y2 = g_panel->fb->height;
-	return force_redraw(g_panel->fb, &dirty_rect);
+	dirty_rect.y2 = (height > 0)
+		? height
+		: fb->height;
+
+	// Call framebuffer region update handler
+	return fb->funcs->dirty(fb, NULL, 0, 0, &dirty_rect, 1);
 }
 
-int drm_set_indicator(size_t idx, char c)
+int drm_set_indicator(struct drm_device *drm, uint8_t idx, uint8_t chr)
 {
-	struct drm_clip_rect dirty_rect;
-
-	if (!g_panel || !g_panel->fb || !g_panel->fb->funcs
-	 || !g_panel->fb->funcs->dirty) {
-		return -1;
-	}
-
-	// Set indicator
 	if (idx >= MAX_INDICATORS) {
-		return -1;
+		return 0;
 	}
-	g_panel->indicators[idx] = c;
 
-	// Refresh indicator portion of framebuffer
-	dirty_rect.x1 = 0;
-	dirty_rect.x2 = g_panel->fb->width;
-	dirty_rect.y1 = 0;
-	dirty_rect.y2 = INDICATOR_HEIGHT;
-	return force_redraw(g_panel->fb, &dirty_rect);
+	g_indicators[idx] = chr;
+	return drm_redraw_fb(drm, INDICATOR_HEIGHT);
 }
