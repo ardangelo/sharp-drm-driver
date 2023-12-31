@@ -37,6 +37,8 @@ static int sharp_memory_probe(struct spi_device *spi)
 
 static void sharp_memory_remove(struct spi_device *spi)
 {
+	drm_clear_overlays();
+
 	ioctl_remove();
 	params_remove();
 	drm_remove(spi);
@@ -68,8 +70,34 @@ void sharp_memory_set_invert(int setting)
 }
 EXPORT_SYMBOL(sharp_memory_set_invert);
 
-void sharp_memory_set_indicator(int idx, char c)
+void* sharp_memory_add_overlay(int x, int y, int width, int height,
+	unsigned char const* pixels)
 {
-	drm_set_indicator(idx, c);
+	return drm_add_overlay(x, y, width, height, pixels);
 }
-EXPORT_SYMBOL(sharp_memory_set_indicator);
+EXPORT_SYMBOL(sharp_memory_add_overlay);
+
+void sharp_memory_remove_overlay(void* entry)
+{
+	drm_remove_overlay(entry);
+}
+EXPORT_SYMBOL(sharp_memory_remove_overlay);
+
+void* sharp_memory_show_overlay(void* storage)
+{
+	return drm_show_overlay(storage);
+}
+EXPORT_SYMBOL(sharp_memory_show_overlay);
+
+void sharp_memory_hide_overlay(void* display)
+{
+	drm_hide_overlay(display);
+}
+EXPORT_SYMBOL(sharp_memory_hide_overlay);
+
+void sharp_memory_clear_overlays(void)
+{
+	drm_clear_overlays();
+}
+EXPORT_SYMBOL(sharp_memory_clear_overlays);
+

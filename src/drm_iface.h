@@ -29,6 +29,11 @@ int drm_probe(struct spi_device *spi);
 void drm_remove(struct spi_device *spi);
 
 int drm_redraw_fb(struct drm_device *drm, int height);
-int drm_set_indicator(int idx, char c);
+void* drm_add_overlay(int x, int y, int width, int height,
+	unsigned char const* pixels);
+void drm_remove_overlay(void* storage);
+void drm_clear_overlays(void);
+void* drm_show_overlay(void* storage);
+void drm_hide_overlay(void* display);
 
 #endif

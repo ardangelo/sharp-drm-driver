@@ -6,3 +6,5 @@
 *.dtbo
 *.ko
 *.symvers
+*.d
+*.d.*

@@ -7,7 +7,7 @@
 
 int g_param_mono_cutoff = 32;
 int g_param_mono_invert = 0;
-int g_param_indicators = 1;
+int g_param_overlays = 1;
 
 static int set_param_u8(const char *val, const struct kernel_param *kp)
 {
@@ -35,8 +35,8 @@ MODULE_PARM_DESC(mono_cutoff,
 module_param_cb(mono_invert, &u8_param_ops, &g_param_mono_invert, 0660);
 MODULE_PARM_DESC(mono_invert, "0 for no inversion, 1 for inversion");
 
-module_param_cb(indicators, &u8_param_ops, &g_param_indicators, 0660);
-MODULE_PARM_DESC(indicators, "0 for no indicators, 1 for indicators");
+module_param_cb(overlays, &u8_param_ops, &g_param_overlays, 0660);
+MODULE_PARM_DESC(overlays, "0 for no overlays, 1 for overlays");
 
 int params_probe(void)
 {

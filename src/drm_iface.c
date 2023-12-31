@@ -12,6 +12,7 @@
 #include <linux/sched/clock.h>
 #include <linux/spi/spi.h>
 #include <linux/mutex.h>
+#include <linux/list.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
@@ -34,12 +35,34 @@
 #include "ioctl_iface.h"
 #include "drm_iface.h"
 
-#include "indicators.h"
-
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
-struct sharp_memory_panel {
+// Globals
+
+struct sharp_overlay_t
+{
+	int x, y, height, width;
+	unsigned char *pixels;
+};
+
+struct overlay_storage_t
+{
+	struct list_head list;
+	struct sharp_overlay_t overlay;
+};
+
+struct overlay_display_t
+{
+	struct list_head list;
+	struct overlay_storage_t *storage;
+};
+
+static LIST_HEAD(g_overlays);
+static LIST_HEAD(g_visible_overlays);
+
+struct sharp_memory_panel
+{
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
 	const struct drm_display_mode *mode;
@@ -60,8 +83,6 @@ struct sharp_memory_panel {
 	struct gpio_desc *gpio_disp;
 	struct gpio_desc *gpio_vcom;
 };
-
-static char g_indicators[MAX_INDICATORS];
 
 static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
 {
@@ -136,22 +157,20 @@ static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
 	return rc;
 }
 
-static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width,
+static void draw_overlays(struct sharp_memory_panel *panel, u8* buf, int width,
 	struct drm_rect const* clip)
 {
-	int i, dx, dy, sx, sy;
-	u8 const* ind = NULL;
+	int x, y, dx, dy, sx, sy;
+	struct overlay_display_t *p;
+	struct sharp_overlay_t const *ov;
 
-	for (i = 0; i < MAX_INDICATORS; i++) {
+	list_for_each_entry(p, &g_visible_overlays, list) {
+		ov = &p->storage->overlay;
+		x = (ov->x < 0) ? (panel->width + ov->x) : ov->x;
+		y = (ov->y < 0) ? (panel->height + ov->y) : ov->y;
 
-		// Get indicator pixels
-		ind = indicator_for(g_indicators[i]);
-		if (!ind) {
-			continue;
-		}
-
-		// Draw indicator pixels
-		for (sy = 0; sy < INDICATOR_HEIGHT; sy++) {
+		// Draw overlay pixels
+		for (sy = 0; sy < ov->height; sy++) {
 
 			if (sy < clip->y1) {
 				continue;
@@ -161,7 +180,7 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 
 			dy = sy - clip->y1;
 
-			for (sx = 0; sx < INDICATOR_WIDTH; sx++) {
+			for (sx = 0; sx < ov->width; sx++) {
 
 				if (sx < clip->x1) {
 					continue;
@@ -169,8 +188,9 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 					break;
 				}
 
-				dx = (width - ((i + 1) * INDICATOR_WIDTH) + sx) - clip->x1;
-				buf[dy * (clip->x2 - clip->x1) + dx] = ind[sy * INDICATOR_HEIGHT + sx];
+				dx = (x + sx) - clip->x1;
+				buf[dy * (y + clip->x2 - clip->x1) + dx]
+					= ov->pixels[sy * ov->height + sx];
 			}
 		}
 	}
@@ -254,14 +274,11 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
-	// Add status indicators
-	if (g_param_indicators) {
+	// Add overlays
+	if (g_param_overlays) {
 
-		// Only redraw indicators if the dirty region would overwrite them
-		if ((clip->x1 < (fb->width - INDICATORS_WIDTH))
-		 && (clip->y1 < INDICATOR_HEIGHT)) {
-			draw_indicators(panel, buf, fb->width, clip);
-		}
+		// TODO: track overlay draw region
+		draw_overlays(panel, buf, fb->width, clip);
 	}
 
 	// Convert in-place from 8-bit grayscale to mono
@@ -486,7 +503,7 @@ int drm_probe(struct spi_device *spi)
 	struct device *dev;
 	struct sharp_memory_panel *panel;
 	struct drm_device *drm;
-	int ret, i;
+	int ret;
 
 	printk(KERN_INFO "sharp_memory: entering drm_probe\n");
 
@@ -534,9 +551,6 @@ int drm_probe(struct spi_device *spi)
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
-	for (i = 0; i < MAX_INDICATORS; i++) {
-		g_indicators[i] = '\0';
-	}
 
 	// Allocate reused heap buffers suitable for SPI source
 	panel->buf = devm_kzalloc(dev, panel->width * panel->height, GFP_KERNEL);
@@ -594,6 +608,9 @@ void drm_remove(struct spi_device *spi)
 
 	printk(KERN_INFO "sharp_memory: drm_remove\n");
 
+	// Remove all overlays
+	drm_clear_overlays();
+
 	// Get DRM and panel device from SPI
 	drm = spi_get_drvdata(spi);
 
@@ -635,13 +652,68 @@ int drm_redraw_fb(struct drm_device *drm, int height)
 	return fb->funcs->dirty(fb, NULL, 0, 0, &dirty_rect, 1);
 }
 
-int drm_set_indicator(int idx, char c)
+void* drm_add_overlay(int x, int y, int width, int height,
+	unsigned char const* pixels)
 {
-	if (idx >= MAX_INDICATORS) {
-		return 0;
+	void *chunk = kmalloc(sizeof(struct overlay_storage_t), GFP_KERNEL);
+
+	struct overlay_storage_t *entry = (struct overlay_storage_t *)chunk;
+	entry->overlay.x = x;
+	entry->overlay.y = y;
+	entry->overlay.width = width;
+	entry->overlay.height = height;
+	entry->overlay.pixels = kmemdup(pixels, width * height, GFP_KERNEL);
+
+	INIT_LIST_HEAD(&entry->list);
+	list_add_tail(&entry->list, &g_overlays);
+
+	return entry;
+}
+
+void drm_remove_overlay(void* entry_)
+{
+	struct overlay_storage_t *entry = (struct overlay_storage_t *)entry_;
+
+	list_del(&entry->list);
+	kfree(entry->overlay.pixels);
+	kfree(entry);
+}
+
+void drm_clear_overlays(void)
+{
+	{
+		struct overlay_display_t *ptr, *next;
+		list_for_each_entry_safe(ptr, next, &g_visible_overlays, list) {
+			drm_hide_overlay(ptr);
+		}
 	}
 
-	g_indicators[idx] = c;
-
-	return 0;
+	{
+		struct overlay_storage_t *ptr, *next;
+		list_for_each_entry_safe(ptr, next, &g_overlays, list) {
+			drm_remove_overlay(ptr);
+		}
+	}
 }
+
+void* drm_show_overlay(void* storage_)
+{
+	void *chunk = kmalloc(sizeof(struct overlay_display_t), GFP_KERNEL);
+	struct overlay_display_t *entry = (struct overlay_display_t *)chunk;
+
+	entry->storage = (struct overlay_storage_t *)storage_;
+
+	INIT_LIST_HEAD(&entry->list);
+	list_add_tail(&entry->list, &g_visible_overlays);
+
+	return entry;
+}
+
+void drm_hide_overlay(void* entry_)
+{
+	struct overlay_display_t *entry = (struct overlay_display_t *)entry_;
+
+	list_del(&entry->list);
+	kfree(entry);
+}
+
