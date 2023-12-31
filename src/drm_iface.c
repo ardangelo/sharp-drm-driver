@@ -40,12 +40,6 @@
 
 // Globals
 
-struct sharp_overlay_t
-{
-	int x, y, height, width;
-	unsigned char *pixels;
-};
-
 struct overlay_storage_t
 {
 	struct list_head list;
@@ -189,7 +183,7 @@ static void draw_overlays(struct sharp_memory_panel *panel, u8* buf, int width,
 				}
 
 				dx = (x + sx) - clip->x1;
-				buf[dy * (y + clip->x2 - clip->x1) + dx]
+				buf[(y + dy) * (clip->x2 - clip->x1) + dx]
 					= ov->pixels[sy * ov->height + sx];
 			}
 		}
@@ -480,7 +474,12 @@ static const struct drm_display_mode sharp_memory_ls027b7dh01_mode = {
 DEFINE_DRM_GEM_DMA_FOPS(sharp_memory_fops);
 
 static const struct drm_ioctl_desc sharp_memory_ioctls[] = {
-	DRM_IOCTL_DEF_DRV_REDRAW
+	DRM_IOCTL_DEF_DRV_REDRAW,
+	DRM_IOCTL_DEF_DRV_OV_ADD,
+	DRM_IOCTL_DEF_DRV_OV_REM,
+	DRM_IOCTL_DEF_DRV_OV_SHOW,
+	DRM_IOCTL_DEF_DRV_OV_HIDE,
+	DRM_IOCTL_DEF_DRV_OV_CLEAR
 };
 
 static const struct drm_driver sharp_memory_driver = {
