@@ -184,7 +184,7 @@ static void draw_overlays(struct sharp_memory_panel *panel, u8* buf, int width,
 
 				dx = (x + sx) - clip->x1;
 				buf[(y + dy) * (clip->x2 - clip->x1) + dx]
-					= ov->pixels[sy * ov->height + sx];
+					= ov->pixels[(sy * ov->width) + sx];
 			}
 		}
 	}
