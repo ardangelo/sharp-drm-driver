@@ -6,100 +6,76 @@
 #include "drm_iface.h"
 #include "ioctl_iface.h"
 
-#define SHARP_IOC_MAGIC 0xd5
-#define SHARP_IOCTQ_SET_INVERT _IOW(SHARP_IOC_MAGIC, 1, uint32_t)
-#define SHARP_IOCTQ_SET_INDICATOR _IOW(SHARP_IOC_MAGIC, 2, uint32_t)
-#define SHARP_IOC_MAXNR 2
-
-static int ioctl_set_invert(unsigned long arg)
-{
-	params_set_mono_invert((int)arg);
-
-	return 0;
-}
-
-static int ioctl_set_indicator(unsigned long arg)
-{
-	uint8_t idx, ch;
-
-	idx = arg >> 8;
-	ch = arg & 0xff;
-
-	return drm_set_indicator(idx, ch);
-}
-
-static int sharp_open(struct inode *inode, struct file *filp)
-{
-	return 0;
-}
-
-static int sharp_release(struct inode *inode, struct file *filp)
-{
-	return 0;
-}
-
-static long int sharp_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
-{
-	switch (cmd) {
-
-	case SHARP_IOCTQ_SET_INVERT:
-		(void)ioctl_set_invert((int)arg);
-		return 0;
-
-	case SHARP_IOCTQ_SET_INDICATOR:
-		(void)ioctl_set_indicator((int)arg);
-		return 0;
-
-
-	default: 
-		printk(KERN_INFO "Bad command: %d", cmd);
-		return -EINVAL;
-	}
-}
-
-static struct file_operations fops = {
-	.owner = THIS_MODULE,
-	.open = sharp_open,
-	.unlocked_ioctl = sharp_ioctl,
-	.release = sharp_release,
-};
-
-static struct cdev g_cdev;
-static dev_t g_dev;
-struct class *g_class;
-
 int ioctl_probe(void)
 {
-	int rc;
-
-	if ((rc = alloc_chrdev_region(&g_dev, 0, 1, "sharp"))) {
-		printk(KERN_ERR "Failed to allocate device numbers\n");
-		return rc;
-	}
-
-	g_class = class_create(THIS_MODULE, "sharp_class");
-	device_create(g_class, NULL, g_dev, NULL, "sharp");
-
-	cdev_init(&g_cdev, &fops);
-	g_cdev.owner = THIS_MODULE;
-
-	if ((rc = cdev_add(&g_cdev, g_dev, 1))) {
-		unregister_chrdev_region(g_dev, 1);
-		printk(KERN_ERR "Failed to add the character device\n");
-		return rc;
-	}
-
-	printk(KERN_INFO "Character device registered: major = %d, minor = %d\n",
-		MAJOR(g_dev), MINOR(g_dev));
-
 	return 0;
 }
 
 void ioctl_remove(void)
+{}
+
+int sharp_memory_ioctl_redraw(struct drm_device *dev, void *data,
+	struct drm_file *file)
 {
-	cdev_del(&g_cdev);
-	device_destroy(g_class, g_dev);
-	class_destroy(g_class);
-	unregister_chrdev_region(g_dev, 1);
-	printk(KERN_INFO "Character device unregistered\n");
+	drm_redraw_fb(dev, -1);
+	return 0;
 }
+
+int sharp_memory_ioctl_ov_add(struct drm_device *dev,
+	void *in_overlay_out_storage, struct drm_file *file)
+{
+	union sharp_memory_ioctl_ov_add_t *add
+		= (union sharp_memory_ioctl_ov_add_t *)in_overlay_out_storage;
+
+	struct sharp_overlay_t *ov = add->in_overlay;
+	add->out_storage = drm_add_overlay(ov->x, ov->y, ov->width, ov->height,
+		ov->pixels);
+
+	return 0;
+}
+
+int sharp_memory_ioctl_ov_rem(struct drm_device *dev, void *storage_,
+	struct drm_file *file)
+{
+	struct sharp_memory_ioctl_ov_rem_t * storage
+		= (struct sharp_memory_ioctl_ov_rem_t *)storage_;
+
+	drm_remove_overlay(storage->storage);
+
+	return 0;
+}
+
+int sharp_memory_ioctl_ov_show(struct drm_device *dev,
+	void *in_storage_out_display, struct drm_file *file)
+{
+	union sharp_memory_ioctl_ov_show_t *show
+		= (union sharp_memory_ioctl_ov_show_t *)in_storage_out_display;
+
+	show->out_display = drm_show_overlay(show->in_storage);
+
+	drm_redraw_fb(dev, -1);
+
+	return 0;
+}
+
+int sharp_memory_ioctl_ov_hide(struct drm_device *dev, void *display_,
+	struct drm_file *file)
+{
+	struct sharp_memory_ioctl_ov_hide_t *display
+		= (struct sharp_memory_ioctl_ov_hide_t *)display_;
+
+	drm_hide_overlay(display->display);
+
+	drm_redraw_fb(dev, -1);
+
+	return 0;
+}
+
+int sharp_memory_ioctl_ov_clear(struct drm_device *dev, void *,
+	struct drm_file *file)
+{
+	drm_clear_overlays();
+
+	return 0;
+}
+

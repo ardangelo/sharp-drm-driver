@@ -11,6 +11,8 @@
 #include <linux/property.h>
 #include <linux/sched/clock.h>
 #include <linux/spi/spi.h>
+#include <linux/mutex.h>
+#include <linux/list.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
@@ -33,12 +35,28 @@
 #include "ioctl_iface.h"
 #include "drm_iface.h"
 
-#include "indicators.h"
-
 #define CMD_WRITE_LINE 0b10000000
 #define CMD_CLEAR_SCREEN 0b00100000
 
-struct sharp_memory_panel {
+// Globals
+
+struct overlay_storage_t
+{
+	struct list_head list;
+	struct sharp_overlay_t overlay;
+};
+
+struct overlay_display_t
+{
+	struct list_head list;
+	struct overlay_storage_t *storage;
+};
+
+static LIST_HEAD(g_overlays);
+static LIST_HEAD(g_visible_overlays);
+
+struct sharp_memory_panel
+{
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
 	const struct drm_display_mode *mode;
@@ -56,13 +74,9 @@ struct sharp_memory_panel {
 	unsigned char *cmd_buf;
 	unsigned char *trailer_buf;
 
-	char indicators[MAX_INDICATORS];
-
 	struct gpio_desc *gpio_disp;
 	struct gpio_desc *gpio_vcom;
 };
-
-static struct sharp_memory_panel* g_panel = NULL;
 
 static inline struct sharp_memory_panel *drm_to_panel(struct drm_device *drm)
 {
@@ -137,22 +151,20 @@ static int sharp_memory_spi_write_tagged_lines(struct sharp_memory_panel *panel,
 	return rc;
 }
 
-static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width,
+static void draw_overlays(struct sharp_memory_panel *panel, u8* buf, int width,
 	struct drm_rect const* clip)
 {
-	int i, dx, dy, sx, sy;
-	u8 const* ind = NULL;
+	int x, y, dx, dy, sx, sy;
+	struct overlay_display_t *p;
+	struct sharp_overlay_t const *ov;
 
-	for (i = 0; i < MAX_INDICATORS; i++) {
+	list_for_each_entry(p, &g_visible_overlays, list) {
+		ov = &p->storage->overlay;
+		x = (ov->x < 0) ? (panel->width + ov->x) : ov->x;
+		y = (ov->y < 0) ? (panel->height + ov->y) : ov->y;
 
-		// Get indicator pixels
-		ind = indicator_for(panel->indicators[i]);
-		if (!ind) {
-			continue;
-		}
-
-		// Draw indicator pixels
-		for (sy = 0; sy < INDICATOR_HEIGHT; sy++) {
+		// Draw overlay pixels
+		for (sy = 0; sy < ov->height; sy++) {
 
 			if (sy < clip->y1) {
 				continue;
@@ -162,7 +174,7 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 
 			dy = sy - clip->y1;
 
-			for (sx = 0; sx < INDICATOR_WIDTH; sx++) {
+			for (sx = 0; sx < ov->width; sx++) {
 
 				if (sx < clip->x1) {
 					continue;
@@ -170,8 +182,9 @@ static void draw_indicators(struct sharp_memory_panel *panel, u8* buf, int width
 					break;
 				}
 
-				dx = (width - ((i + 1) * INDICATOR_WIDTH) + sx) - clip->x1;
-				buf[dy * (clip->x2 - clip->x1) + dx] = ind[sy * INDICATOR_HEIGHT + sx];
+				dx = (x + sx) - clip->x1;
+				buf[(y + dy) * (clip->x2 - clip->x1) + dx]
+					= ov->pixels[(sy * ov->width) + sx];
 			}
 		}
 	}
@@ -255,14 +268,11 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
-	// Add status indicators
-	if (g_param_indicators) {
+	// Add overlays
+	if (g_param_overlays) {
 
-		// Only redraw indicators if the dirty region would overwrite them
-		if ((clip->x1 < (fb->width - INDICATORS_WIDTH))
-		 && (clip->y1 < INDICATOR_HEIGHT)) {
-			draw_indicators(panel, buf, fb->width, clip);
-		}
+		// TODO: track overlay draw region
+		draw_overlays(panel, buf, fb->width, clip);
 	}
 
 	// Convert in-place from 8-bit grayscale to mono
@@ -399,11 +409,22 @@ static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
 	}
 }
 
+static int sharp_memory_pipe_prepare_fb(struct drm_simple_display_pipe *pipe,
+	struct drm_plane_state *plane_state)
+{
+	return drm_gem_simple_display_pipe_prepare_fb(pipe, plane_state);
+}
+
+static void sharp_memory_pipe_cleanup_fb(struct drm_simple_display_pipe *pipe,
+	struct drm_plane_state *plane_state)
+{}
+
 static const struct drm_simple_display_pipe_funcs sharp_memory_pipe_funcs = {
 	.enable = sharp_memory_pipe_enable,
 	.disable = sharp_memory_pipe_disable,
 	.update = sharp_memory_pipe_update,
-	.prepare_fb = drm_gem_simple_display_pipe_prepare_fb,
+	.prepare_fb = sharp_memory_pipe_prepare_fb,
+	.cleanup_fb = sharp_memory_pipe_cleanup_fb,
 };
 
 static int sharp_memory_connector_get_modes(struct drm_connector *connector)
@@ -413,20 +434,15 @@ static int sharp_memory_connector_get_modes(struct drm_connector *connector)
 	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
 
-static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev, struct drm_file *file,
-	const struct drm_mode_fb_cmd2 *mode_cmd)
+static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev,
+	struct drm_file *file, const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	struct drm_framebuffer* fb;
+	struct sharp_memory_panel *panel;
 
 	// Initialize framebuffer
-	fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
-
-	// Store global framebuffer for external operations
-	if (g_panel) {
-		g_panel->fb = fb;
-	}
-
-	return fb;
+	panel = drm_to_panel(dev);
+	panel->fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
+	return panel->fb;
 }
 
 static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
@@ -457,6 +473,15 @@ static const struct drm_display_mode sharp_memory_ls027b7dh01_mode = {
 
 DEFINE_DRM_GEM_DMA_FOPS(sharp_memory_fops);
 
+static const struct drm_ioctl_desc sharp_memory_ioctls[] = {
+	DRM_IOCTL_DEF_DRV_REDRAW,
+	DRM_IOCTL_DEF_DRV_OV_ADD,
+	DRM_IOCTL_DEF_DRV_OV_REM,
+	DRM_IOCTL_DEF_DRV_OV_SHOW,
+	DRM_IOCTL_DEF_DRV_OV_HIDE,
+	DRM_IOCTL_DEF_DRV_OV_CLEAR
+};
+
 static const struct drm_driver sharp_memory_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &sharp_memory_fops,
@@ -466,6 +491,9 @@ static const struct drm_driver sharp_memory_driver = {
 	.date = "20230713",
 	.major = 1,
 	.minor = 1,
+
+	.ioctls = sharp_memory_ioctls,
+	.num_ioctls = ARRAY_SIZE(sharp_memory_ioctls)
 };
 
 int drm_probe(struct spi_device *spi)
@@ -474,7 +502,7 @@ int drm_probe(struct spi_device *spi)
 	struct device *dev;
 	struct sharp_memory_panel *panel;
 	struct drm_device *drm;
-	int ret, i;
+	int ret;
 
 	printk(KERN_INFO "sharp_memory: entering drm_probe\n");
 
@@ -497,7 +525,6 @@ int drm_probe(struct spi_device *spi)
 		printk(KERN_ERR "sharp_memory: failed to allocate panel\n");
 		return PTR_ERR(panel);
 	}
-	g_panel = panel;
 
 	// Initialize GPIO
 	panel->gpio_disp = devm_gpiod_get_optional(dev, "disp", GPIOD_OUT_HIGH);
@@ -518,13 +545,11 @@ int drm_probe(struct spi_device *spi)
 
 	// Initialize panel contents
 	panel->spi = spi;
+	panel->fb = NULL;
 	mode = &sharp_memory_ls027b7dh01_mode;
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
-	for (i = 0; i < MAX_INDICATORS; i++) {
-		panel->indicators[i] = '\0';
-	}
 
 	// Allocate reused heap buffers suitable for SPI source
 	panel->buf = devm_kzalloc(dev, panel->width * panel->height, GFP_KERNEL);
@@ -582,8 +607,8 @@ void drm_remove(struct spi_device *spi)
 
 	printk(KERN_INFO "sharp_memory: drm_remove\n");
 
-	// Clear global panel
-	g_panel = NULL;
+	// Remove all overlays
+	drm_clear_overlays();
 
 	// Get DRM and panel device from SPI
 	drm = spi_get_drvdata(spi);
@@ -601,51 +626,93 @@ void drm_remove(struct spi_device *spi)
 	drm_atomic_helper_shutdown(drm);
 }
 
-static int force_redraw(struct drm_framebuffer* fb, struct drm_clip_rect* dirty_rect)
+int drm_redraw_fb(struct drm_device *drm, int height)
 {
-	if (!fb || !fb->funcs->dirty) {
-		return -1;
-	}
-
-	// Call framebuffer region update handler
-	return fb->funcs->dirty(fb, NULL, 0, 0, dirty_rect, 1);
-}
-
-int drm_refresh(void)
-{
+	struct sharp_memory_panel *panel;
+	struct drm_framebuffer *fb;
 	struct drm_clip_rect dirty_rect;
 
-	if (!g_panel) {
+	if (!drm
+	 || ((panel = drm_to_panel(drm)) == NULL)
+	 || ((fb = panel->fb) == NULL)
+	 || !fb->funcs || !fb->funcs->dirty) {
 		return 0;
 	}
 
-	// Refresh framebuffer
+	// Create dirty region
 	dirty_rect.x1 = 0;
-	dirty_rect.x2 = g_panel->fb->width;
+	dirty_rect.x2 = fb->width;
 	dirty_rect.y1 = 0;
-	dirty_rect.y2 = g_panel->fb->height;
-	return force_redraw(g_panel->fb, &dirty_rect);
+	dirty_rect.y2 = (height > 0)
+		? height
+		: fb->height;
+
+	// Call framebuffer region update handler
+	return fb->funcs->dirty(fb, NULL, 0, 0, &dirty_rect, 1);
 }
 
-int drm_set_indicator(size_t idx, char c)
+void* drm_add_overlay(int x, int y, int width, int height,
+	unsigned char const* pixels)
 {
-	struct drm_clip_rect dirty_rect;
+	void *chunk = kmalloc(sizeof(struct overlay_storage_t), GFP_KERNEL);
 
-	if (!g_panel || !g_panel->fb || !g_panel->fb->funcs
-	 || !g_panel->fb->funcs->dirty) {
-		return -1;
-	}
+	struct overlay_storage_t *entry = (struct overlay_storage_t *)chunk;
+	entry->overlay.x = x;
+	entry->overlay.y = y;
+	entry->overlay.width = width;
+	entry->overlay.height = height;
+	entry->overlay.pixels = kmemdup(pixels, width * height, GFP_KERNEL);
 
-	// Set indicator
-	if (idx >= MAX_INDICATORS) {
-		return -1;
-	}
-	g_panel->indicators[idx] = c;
+	INIT_LIST_HEAD(&entry->list);
+	list_add_tail(&entry->list, &g_overlays);
 
-	// Refresh indicator portion of framebuffer
-	dirty_rect.x1 = 0;
-	dirty_rect.x2 = g_panel->fb->width;
-	dirty_rect.y1 = 0;
-	dirty_rect.y2 = INDICATOR_HEIGHT;
-	return force_redraw(g_panel->fb, &dirty_rect);
+	return entry;
 }
+
+void drm_remove_overlay(void* entry_)
+{
+	struct overlay_storage_t *entry = (struct overlay_storage_t *)entry_;
+
+	list_del(&entry->list);
+	kfree(entry->overlay.pixels);
+	kfree(entry);
+}
+
+void drm_clear_overlays(void)
+{
+	{
+		struct overlay_display_t *ptr, *next;
+		list_for_each_entry_safe(ptr, next, &g_visible_overlays, list) {
+			drm_hide_overlay(ptr);
+		}
+	}
+
+	{
+		struct overlay_storage_t *ptr, *next;
+		list_for_each_entry_safe(ptr, next, &g_overlays, list) {
+			drm_remove_overlay(ptr);
+		}
+	}
+}
+
+void* drm_show_overlay(void* storage_)
+{
+	void *chunk = kmalloc(sizeof(struct overlay_display_t), GFP_KERNEL);
+	struct overlay_display_t *entry = (struct overlay_display_t *)chunk;
+
+	entry->storage = (struct overlay_storage_t *)storage_;
+
+	INIT_LIST_HEAD(&entry->list);
+	list_add_tail(&entry->list, &g_visible_overlays);
+
+	return entry;
+}
+
+void drm_hide_overlay(void* entry_)
+{
+	struct overlay_display_t *entry = (struct overlay_display_t *)entry_;
+
+	list_del(&entry->list);
+	kfree(entry);
+}
+
