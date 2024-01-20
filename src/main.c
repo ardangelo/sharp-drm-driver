@@ -68,36 +68,36 @@ void sharp_memory_set_invert(int setting)
 {
 	params_set_mono_invert(setting);
 }
-EXPORT_SYMBOL(sharp_memory_set_invert);
+EXPORT_SYMBOL_GPL(sharp_memory_set_invert);
 
 void* sharp_memory_add_overlay(int x, int y, int width, int height,
 	unsigned char const* pixels)
 {
 	return drm_add_overlay(x, y, width, height, pixels);
 }
-EXPORT_SYMBOL(sharp_memory_add_overlay);
+EXPORT_SYMBOL_GPL(sharp_memory_add_overlay);
 
 void sharp_memory_remove_overlay(void* entry)
 {
 	drm_remove_overlay(entry);
 }
-EXPORT_SYMBOL(sharp_memory_remove_overlay);
+EXPORT_SYMBOL_GPL(sharp_memory_remove_overlay);
 
 void* sharp_memory_show_overlay(void* storage)
 {
 	return drm_show_overlay(storage);
 }
-EXPORT_SYMBOL(sharp_memory_show_overlay);
+EXPORT_SYMBOL_GPL(sharp_memory_show_overlay);
 
 void sharp_memory_hide_overlay(void* display)
 {
 	drm_hide_overlay(display);
 }
-EXPORT_SYMBOL(sharp_memory_hide_overlay);
+EXPORT_SYMBOL_GPL(sharp_memory_hide_overlay);
 
 void sharp_memory_clear_overlays(void)
 {
 	drm_clear_overlays();
 }
-EXPORT_SYMBOL(sharp_memory_clear_overlays);
+EXPORT_SYMBOL_GPL(sharp_memory_clear_overlays);
 
