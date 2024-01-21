@@ -71,7 +71,7 @@ int sharp_memory_ioctl_ov_hide(struct drm_device *dev, void *display_,
 	return 0;
 }
 
-int sharp_memory_ioctl_ov_clear(struct drm_device *dev, void *,
+int sharp_memory_ioctl_ov_clear(struct drm_device *dev, void *_,
 	struct drm_file *file)
 {
 	drm_clear_overlays();
