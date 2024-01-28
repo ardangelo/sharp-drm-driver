@@ -163,12 +163,19 @@ static void draw_overlays(struct sharp_memory_panel *panel, u8* buf, int width,
 		x = (ov->x < 0) ? (panel->width + ov->x) : ov->x;
 		y = (ov->y < 0) ? (panel->height + ov->y) : ov->y;
 
+		// Any overlap?
+		if (((y + ov->height) < clip->y1) || (clip->y2 < y)) {
+			continue;
+		}
+
 		// Draw overlay pixels
 		for (sy = 0; sy < ov->height; sy++) {
 
-			if (sy < clip->y1) {
+			// Skip lines before clip
+			if ((y + sy) < clip->y1) {
 				continue;
-			} else if (clip->y2 <= sy) {
+			// Exit if reached end of clip
+			} else if (clip->y2 <= (y + sy)) {
 				break;
 			}
 
