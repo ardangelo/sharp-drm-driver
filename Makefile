@@ -9,9 +9,13 @@ always  := $(dtbo-y)
 
 .PHONY: all clean install uninstall
 
-# LINUX_DIR is set by Buildroot, but not if running manually
+# KERNELRELEASE is set by DKMS, can be different inside chroot
+ifeq ($(KERNELRELEASE),)
+KERNELRELEASE := $(shell uname -r)
+endif
+# LINUX_DIR is set by Buildroot
 ifeq ($(LINUX_DIR),)
-LINUX_DIR := /lib/modules/$(shell uname -r)/build
+LINUX_DIR := /lib/modules/$(KERNELRELEASE)/build
 endif
 
 # BUILD_DIR is set by DKMS, but not if running manually
