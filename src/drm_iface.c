@@ -25,6 +25,7 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_rect.h>
@@ -416,22 +417,11 @@ static void sharp_memory_pipe_update(struct drm_simple_display_pipe *pipe,
 	}
 }
 
-static int sharp_memory_pipe_prepare_fb(struct drm_simple_display_pipe *pipe,
-	struct drm_plane_state *plane_state)
-{
-	return drm_gem_simple_display_pipe_prepare_fb(pipe, plane_state);
-}
-
-static void sharp_memory_pipe_cleanup_fb(struct drm_simple_display_pipe *pipe,
-	struct drm_plane_state *plane_state)
-{}
-
 static const struct drm_simple_display_pipe_funcs sharp_memory_pipe_funcs = {
 	.enable = sharp_memory_pipe_enable,
 	.disable = sharp_memory_pipe_disable,
-	.update = sharp_memory_pipe_update,
-	.prepare_fb = sharp_memory_pipe_prepare_fb,
-	.cleanup_fb = sharp_memory_pipe_cleanup_fb,
+	.update = sharp_memory_pipe_update
+	// .prepare_fb and .cleanup_fb are handled automatically when not set
 };
 
 static int sharp_memory_connector_get_modes(struct drm_connector *connector)
