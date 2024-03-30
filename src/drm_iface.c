@@ -5,6 +5,7 @@
  * Copyright 2023 Andrew D'Angelo
  */
 
+#include <linux/version.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -25,12 +26,15 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
-#include <drm/drm_fbdev_generic.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_rect.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#include <drm/drm_fbdev_generic.h>
+#endif
 
 #include "params_iface.h"
 #include "ioctl_iface.h"
