@@ -8,6 +8,7 @@
 int g_param_mono_cutoff = 32;
 int g_param_mono_invert = 0;
 int g_param_overlays = 1;
+int g_param_auto_clear = 1;
 
 static int set_param_u8(const char *val, const struct kernel_param *kp)
 {
@@ -37,6 +38,9 @@ MODULE_PARM_DESC(mono_invert, "0 for no inversion, 1 for inversion");
 
 module_param_cb(overlays, &u8_param_ops, &g_param_overlays, 0660);
 MODULE_PARM_DESC(overlays, "0 for no overlays, 1 for overlays");
+
+module_param_cb(auto_clear, &u8_param_ops, &g_param_auto_clear, 0660);
+MODULE_PARM_DESC(auto_clear, "0 to retain screen contents on driver unload, 1 to clear");
 
 int params_probe(void)
 {

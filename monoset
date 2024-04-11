@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Save the original mono_cutoff value
+original_mono_cutoff=$(sudo cat /sys/module/sharp_drm/parameters/mono_cutoff)
+
+restore_mono_cutoff() {
+	echo "$original_mono_cutoff" | sudo tee /sys/module/sharp_drm/parameters/mono_cutoff &>/dev/null
+}
+
+# Trap signals to ensure cleanup
+trap 'restore_mono_cutoff; exit' EXIT INT TERM
+
+# Set the new value provided as the first argument
+echo "$1" | sudo tee /sys/module/sharp_drm/parameters/mono_cutoff &>/dev/null
+
+# Execute the command provided as arguments
+"${@:2}"

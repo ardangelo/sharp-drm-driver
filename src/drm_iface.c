@@ -339,8 +339,10 @@ static void power_off(struct sharp_memory_panel *panel)
 {
 	printk(KERN_INFO "sharp_memory: powering off\n");
 
-	// Clear display
-	(void)sharp_memory_spi_clear_screen(panel);
+	// Clear display if auto clear is set
+	if (g_param_auto_clear) {
+		(void)sharp_memory_spi_clear_screen(panel);
+	}
 
 	/* Turn off power and all signals */
 	if (panel->gpio_disp) {
