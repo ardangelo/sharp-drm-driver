@@ -1,3 +1,8 @@
+---
+title: Sharp DRM Driver
+layout: default
+---
+
 # Sharp Memory LCD Kernel Driver
 
 DRM kernel driver for 2.7" 400x240 Sharp memory LCD panel.
