@@ -26,10 +26,26 @@ int sharp_memory_ioctl_ov_add(struct drm_device *dev,
 {
 	union sharp_memory_ioctl_ov_add_t *add
 		= (union sharp_memory_ioctl_ov_add_t *)in_overlay_out_storage;
-
+	unsigned char *pixels = NULL;
+	unsigned long copy_from_user_rc;
 	struct sharp_overlay_t *ov = add->in_overlay;
+
+	// Copy pixel buffer from userspace
+	if ((pixels = (unsigned char*)kmalloc(ov->width * ov->height, GFP_KERNEL)) == NULL) {
+		printk(KERN_ERR "sharp_drm: failed to allocate overlay buffer\n");
+		return -1;
+	}
+	if ((copy_from_user_rc = copy_from_user(pixels, ov->pixels, ov->width * ov->height))) {
+		printk(KERN_ERR "sharp_drm: failed to copy overlay buffer from userspace (could not copy %zu/%zu)\n",
+			copy_from_user_rc, ov->width * ov->height);
+		kfree(pixels);
+		return -1;
+	}
+
+	// Add overlay (copies `pixels`)
 	add->out_storage = drm_add_overlay(ov->x, ov->y, ov->width, ov->height,
-		ov->pixels);
+		pixels);
+	kfree(pixels);
 
 	return 0;
 }
