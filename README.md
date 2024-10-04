@@ -39,7 +39,7 @@ Several options are exposed in the directory `/sys/module/sharp_drm/parameters/`
 
 To make changes persistent:
 
-* Add `sharp_drm=<param>:<setting>` to `/boot/firmware/cmdline.txt`
+* Add `sharp_drm.<param>=<setting>` to `/boot/firmware/cmdline.txt`
 * Edit the file `/etc/modules` and change the line `sharp-drm` to `sharp-drm <param>=<setting>`
 
 * `auto_clear`: `1` to blank the screen when the display driver is unloaded (default enabled). If disabled, screen contents will remain until power is removed.
