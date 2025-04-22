@@ -32,7 +32,10 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+// https://github.com/torvalds/linux/commit/aae4682e5d66c1e1dc181fa341652e037237f144 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+#include <drm/drm_fbdev_ttm.h>
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 #include <drm/drm_fbdev_generic.h>
 #endif
 
@@ -262,6 +265,11 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	struct drm_gem_dma_object *dma_obj;
 	struct iosys_map dst, vmap;
 
+	// https://github.com/torvalds/linux/commit/4cd24d4b1a9548f42cdb7f449edc6f869a8ae730 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	struct drm_format_conv_state fmtcnv_state = DRM_FORMAT_CONV_STATE_INIT;
+#endif
+
 	// Get GEM memory manager
 	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
 
@@ -274,8 +282,13 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	// Initialize destination (buf) and source (video)
 	iosys_map_set_vaddr(&dst, buf);
 	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
+
 	// DMA `clip` into `buf` and convert to 8-bit grayscale
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip, &fmtcnv_state);
+#else
 	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip);
+#endif
 
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
@@ -292,6 +305,9 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 		(clip->x2 - clip->x1), (clip->y2 - clip->y1), clip->y1);
 
 	// Success
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	drm_format_conv_state_release(&fmtcnv_state);
+#endif
 	return 0;
 }
 
@@ -598,7 +614,12 @@ int drm_probe(struct spi_device *spi)
 
 	// fbdev setup
 	spi_set_drvdata(spi, drm);
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
+	drm_fbdev_ttm_setup(drm, 0);
+#else
 	drm_fbdev_generic_setup(drm, 0);
+#endif
 
 	printk(KERN_INFO "sharp_memory: successful probe\n");
 
