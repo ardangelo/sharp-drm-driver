@@ -28,6 +28,9 @@
 int drm_probe(struct spi_device *spi);
 void drm_remove(struct spi_device *spi);
 
+int drm_probe_qemu(struct device *dev, const char *serial_dev);
+void drm_remove_qemu(struct device *dev);
+
 int drm_redraw_fb(struct drm_device *drm, int height);
 void* drm_add_overlay(int x, int y, int width, int height,
 	unsigned char const* pixels);
