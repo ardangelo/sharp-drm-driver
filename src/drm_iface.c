@@ -2,7 +2,7 @@
 /*
  * DRM driver for 2.7" Sharp Memory LCD
  *
- * Copyright 2023 Andrew D'Angelo
+ * Copyright 2026 Andrew D'Angelo
  */
 
 #include <linux/version.h>
@@ -36,7 +36,10 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_fbdev_dma.h>
+#else
 #include <drm/drm_fbdev_generic.h>
 #endif
 
@@ -159,7 +162,11 @@ static void vcom_timer_callback(struct timer_list *t)
 {
 	static u8 vcom_setting = 0;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+	struct sharp_memory_panel *panel = container_of(t, struct sharp_memory_panel, vcom_timer);
+#else
 	struct sharp_memory_panel *panel = from_timer(panel, t, vcom_timer);
+#endif
 
 	// Toggle the GPIO pin
 	if (panel->gpio_vcom) {
@@ -379,6 +386,9 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	int rc;
 	struct drm_gem_dma_object *dma_obj;
 	struct iosys_map dst, vmap;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	struct drm_format_conv_state fmtcnv_state = DRM_FORMAT_CONV_STATE_INIT;
+#endif
 
 	// Get GEM memory manager
 	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
@@ -393,7 +403,11 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	iosys_map_set_vaddr(&dst, buf);
 	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
 	// DMA `clip` into `buf` and convert to 8-bit grayscale
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip, &fmtcnv_state);
+#else
 	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip);
+#endif
 
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
@@ -530,7 +544,11 @@ static void sharp_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
 	spi = panel->spi;
 
 	// Cancel the timer
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0)
+	timer_delete_sync(&panel->vcom_timer);
+#else
 	del_timer_sync(&panel->vcom_timer);
+#endif
 
 	power_off(panel);
 }
@@ -564,16 +582,26 @@ static int sharp_memory_connector_get_modes(struct drm_connector *connector)
 	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
 
+
+// https://github.com/torvalds/linux/commit/4cd24d4b1a9548f42cdb7f449edc6f869a8ae730
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev,
+	struct drm_file *file, const struct drm_format_info *info,
+	const struct drm_mode_fb_cmd2 *mode_cmd)
+{
+	struct sharp_memory_panel *panel = drm_to_panel(dev);
+	panel->fb = drm_gem_fb_create_with_dirty(dev, file, info, mode_cmd);
+	return panel->fb;
+}
+#else
 static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev,
 	struct drm_file *file, const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	struct sharp_memory_panel *panel;
-
-	// Initialize framebuffer
-	panel = drm_to_panel(dev);
+	struct sharp_memory_panel *panel = drm_to_panel(dev);
 	panel->fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
 	return panel->fb;
 }
+#endif
 
 static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
 	.get_modes = sharp_memory_connector_get_modes,
@@ -616,9 +644,14 @@ static const struct drm_driver sharp_memory_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &sharp_memory_fops,
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	.fbdev_probe = drm_fbdev_dma_driver_fbdev_probe,
+#endif
 	.name = "sharp_drm",
 	.desc = "Sharp Memory LCD panel",
-	.date = "20230713",
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+	.date = "20260401",
+#endif
 	.major = 1,
 	.minor = 5,
 
@@ -732,7 +765,11 @@ int drm_probe(struct spi_device *spi)
 
 	// fbdev setup
 	spi_set_drvdata(spi, drm);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	drm_client_setup(drm, NULL);
+#else
 	drm_fbdev_generic_setup(drm, 0);
+#endif
 
 	printk(KERN_INFO "sharp_memory: successful probe\n");
 
@@ -848,7 +885,11 @@ int drm_probe_qemu(struct device *dev, const char *serial_dev)
 	}
 
 	dev_set_drvdata(dev, drm);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+	drm_client_setup(drm, NULL);
+#else
 	drm_fbdev_generic_setup(drm, 0);
+#endif
 
 	printk(KERN_INFO "sharp_memory: drm_probe_qemu successful\n");
 	return 0;

@@ -127,7 +127,7 @@ static void __exit sharp_memory_exit(void)
 module_init(sharp_memory_init);
 module_exit(sharp_memory_exit);
 
-MODULE_VERSION("1.5");
+MODULE_VERSION("1.6");
 MODULE_DESCRIPTION("Sharp Memory LCD DRM driver");
 MODULE_AUTHOR("Andrew D'Angelo");
 MODULE_LICENSE("GPL");
