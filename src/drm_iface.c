@@ -32,9 +32,8 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
-#include <drm/drm_fbdev_generic.h>
-#endif
+#include <drm/clients/drm_client_setup.h>
+#include <drm/drm_fbdev_dma.h>
 
 #include "params_iface.h"
 #include "ioctl_iface.h"
@@ -92,7 +91,7 @@ static void vcom_timer_callback(struct timer_list *t)
 {
 	static u8 vcom_setting = 0;
 
-	struct sharp_memory_panel *panel = from_timer(panel, t, vcom_timer);
+	struct sharp_memory_panel *panel = container_of(t, struct sharp_memory_panel, vcom_timer);
 
 	// Toggle the GPIO pin
 	vcom_setting = (vcom_setting) ? 0 : 1;
@@ -261,6 +260,7 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	int rc;
 	struct drm_gem_dma_object *dma_obj;
 	struct iosys_map dst, vmap;
+	struct drm_format_conv_state fmtcnv_state = DRM_FORMAT_CONV_STATE_INIT;
 
 	// Get GEM memory manager
 	dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
@@ -275,7 +275,7 @@ static int sharp_memory_clip_mono_tagged(struct sharp_memory_panel* panel, size_
 	iosys_map_set_vaddr(&dst, buf);
 	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
 	// DMA `clip` into `buf` and convert to 8-bit grayscale
-	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip);
+	drm_fb_xrgb8888_to_gray8(&dst, NULL, &vmap, fb, clip, &fmtcnv_state);
 
 	// End DMA area
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
@@ -406,7 +406,7 @@ static void sharp_memory_pipe_disable(struct drm_simple_display_pipe *pipe)
 	spi = panel->spi;
 
 	// Cancel the timer
-	del_timer_sync(&panel->vcom_timer);
+	timer_delete_sync(&panel->vcom_timer);
 
 	power_off(panel);
 }
@@ -440,16 +440,26 @@ static int sharp_memory_connector_get_modes(struct drm_connector *connector)
 	return drm_connector_helper_get_modes_fixed(connector, panel->mode);
 }
 
+
+// https://github.com/torvalds/linux/commit/4cd24d4b1a9548f42cdb7f449edc6f869a8ae730
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev,
+	struct drm_file *file, const struct drm_format_info *info,
+	const struct drm_mode_fb_cmd2 *mode_cmd)
+{
+	struct sharp_memory_panel *panel = drm_to_panel(dev);
+	panel->fb = drm_gem_fb_create_with_dirty(dev, file, info, mode_cmd);
+	return panel->fb;
+}
+#else
 static struct drm_framebuffer* create_and_store_fb(struct drm_device *dev,
 	struct drm_file *file, const struct drm_mode_fb_cmd2 *mode_cmd)
 {
-	struct sharp_memory_panel *panel;
-
-	// Initialize framebuffer
-	panel = drm_to_panel(dev);
+	struct sharp_memory_panel *panel = drm_to_panel(dev);
 	panel->fb = drm_gem_fb_create_with_dirty(dev, file, mode_cmd);
 	return panel->fb;
 }
+#endif
 
 static const struct drm_connector_helper_funcs sharp_memory_connector_hfuncs = {
 	.get_modes = sharp_memory_connector_get_modes,
@@ -492,9 +502,10 @@ static const struct drm_driver sharp_memory_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
 	.fops = &sharp_memory_fops,
 	DRM_GEM_DMA_DRIVER_OPS_VMAP,
+	.fbdev_probe = drm_fbdev_dma_driver_fbdev_probe,
 	.name = "sharp_drm",
 	.desc = "Sharp Memory LCD panel",
-	.date = "20230713",
+	//.date = "20230713",
 	.major = 1,
 	.minor = 1,
 
@@ -598,7 +609,7 @@ int drm_probe(struct spi_device *spi)
 
 	// fbdev setup
 	spi_set_drvdata(spi, drm);
-	drm_fbdev_generic_setup(drm, 0);
+	drm_client_setup(drm, NULL);
 
 	printk(KERN_INFO "sharp_memory: successful probe\n");
 
