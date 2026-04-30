@@ -18,6 +18,8 @@
 #include <linux/workqueue.h>
 
 #include <linux/io.h>
+#include <linux/namei.h>
+#include <linux/tty.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_connector.h>
@@ -118,9 +120,28 @@ static void set_gpio_cs(struct sharp_memory_panel* panel, u32 val)
 static int sharp_memory_qemu_write(struct sharp_memory_panel *panel,
 	const void *data, size_t len)
 {
+	const u8 *ptr = data;
+	size_t total = 0;
 	loff_t pos = 0;
-	ssize_t written = kernel_write(panel->qemu_file, data, len, &pos);
-	return (written == (ssize_t)len) ? 0 : -EIO;
+
+	while (total < len) {
+		ssize_t written = kernel_write(panel->qemu_file, ptr + total,
+			len - total, &pos);
+
+		if (written <= 0) {
+			printk(KERN_ERR "sharp_memory: qemu_write failed after %zu/%zu bytes: %zd\n",
+			       total, len, written);
+			return (written < 0) ? (int)written : -EIO;
+		}
+
+		total += written;
+
+		if (need_resched()) {
+			cond_resched();
+		}
+	}
+
+	return 0;
 }
 
 static int sharp_memory_spi_toggle_vcom(struct sharp_memory_panel *panel)
@@ -805,6 +826,41 @@ void drm_remove(struct spi_device *spi)
 	drm_atomic_helper_shutdown(drm);
 }
 
+/* Set the tty at serial_dev to raw mode (clear OPOST) so that Sharp
+ * protocol bytes like 0x0a are not translated to CR+LF by the line
+ * discipline before reaching QEMU.  Uses tty_kopen_exclusive() which
+ * is EXPORT_SYMBOL_GPL since Linux 5.11, avoiding the kernel-internal
+ * file_tty() that was removed from module-visible headers in 6.12.
+ */
+static void prv_set_tty_raw(const char *dev_path)
+{
+	struct path p;
+	dev_t rdev;
+	struct tty_struct *tty;
+	struct ktermios termios;
+
+	if (kern_path(dev_path, LOOKUP_FOLLOW, &p) != 0)
+		return;
+
+	rdev = p.dentry->d_inode->i_rdev;
+	path_put(&p);
+
+	if (!MAJOR(rdev))
+		return;
+
+	tty = tty_kopen_exclusive(rdev);
+	if (IS_ERR(tty)) {
+		printk(KERN_WARNING "sharp_memory: tty_kopen_exclusive(%s): %ld\n",
+		       dev_path, PTR_ERR(tty));
+		return;
+	}
+
+	termios = tty->termios;
+	termios.c_oflag &= ~OPOST;
+	tty_set_termios(tty, &termios);
+	tty_kclose(tty);
+}
+
 int drm_probe_qemu(struct device *dev, const char *serial_dev)
 {
 	const struct drm_display_mode *mode;
@@ -829,6 +885,10 @@ int drm_probe_qemu(struct device *dev, const char *serial_dev)
 	panel->gpio_disp = NULL;
 	panel->gpio_vcom = NULL;
 	panel->gpio_cs   = NULL;
+
+	// Disable OPOST output processing before opening so Sharp protocol
+	// bytes are not mangled in transit to QEMU.
+	prv_set_tty_raw(serial_dev);
 
 	// Open serial device for display output
 	panel->qemu_file = filp_open(serial_dev, O_WRONLY | O_NOCTTY, 0);
