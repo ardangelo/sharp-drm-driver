@@ -9,6 +9,7 @@
 #include <linux/platform_device.h>
 #include <linux/spi/spi.h>
 
+#include "sharp_memory.h"
 #include "drm_iface.h"
 #include "params_iface.h"
 #include "ioctl_iface.h"
