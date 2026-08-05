@@ -60,8 +60,9 @@
 
 // Globals
 
-static void __iomem *g_spi_cs_reg1 = NULL;
-static void __iomem *g_spi_cs_reg2 = NULL;
+//unused
+// static void __iomem *g_spi_cs_reg1 = NULL;
+// static void __iomem *g_spi_cs_reg2 = NULL;
 
 struct overlay_storage_t
 {
